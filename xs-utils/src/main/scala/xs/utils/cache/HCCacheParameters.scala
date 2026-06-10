@@ -32,7 +32,7 @@ import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tile.MaxHartIdBits
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util.{BundleField, BundleFieldBase, UIntToOH1}
-import org.chipsalliance.diplomacy.bundlebridge.BundleBridgeNexusNode
+import freechips.rocketchip.diplomacy.BundleBridgeNexusNode
 import xs.utils.{ResetGen, Pipeline, FastArbiter}
 import xs.utils.cache.common.{AliasKey, PreferCacheKey, PrefetchKey}
 import xs.utils.cache.prefetch.{PrefetchParameters, TPmetaParameters}
@@ -124,4 +124,3 @@ case class HCCacheParameters
     inner = clientCaches
   )
 }
-

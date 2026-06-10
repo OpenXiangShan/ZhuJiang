@@ -12,7 +12,10 @@ import zhujiang.{ZJBundle, ZJModule, ZJParametersKey}
 
 class AsyncSink[T <: Data](gen: T)(implicit p: Parameters) extends AsyncQueueSink(gen, p(ZJParametersKey).asyncParams)
 
-class AsyncSource[T <: Data](gen: T)(implicit p: Parameters) extends AsyncQueueSource(gen, p(ZJParametersKey).asyncParams)
+class AsyncSource[T <: Data](gen: T)(implicit p: Parameters) extends AsyncQueueSource(gen, p(ZJParametersKey).asyncParams) {
+    val empty = IO(Output(Bool()))
+    empty := sink_ready && widx === ridx
+}
 
 trait BaseAsyncIcnMonoBundle {
     def req: Option[AsyncBundle[UInt]]
@@ -134,7 +137,7 @@ class IcnSideAsyncModule(node: Node)(implicit p: Parameters) extends BaseIcnAsyn
         val rx = io.dev.rx.bundleMap(chn)
         val tx = io.async.tx.bundleMap(chn)
         val ax = toAsync(tx, rx)
-        txqEmptyVec(idx) := ax.io.empty
+        txqEmptyVec(idx) := ax.empty
         ax.suggestName(s"async_src_${chn.toLowerCase}")
     }
 
@@ -176,7 +179,7 @@ class DeviceSideAsyncModule(node: Node)(implicit p: Parameters) extends BaseIcnA
         val rx = io.icn.rx.bundleMap(chn)
         val tx = io.async.tx.bundleMap(chn)
         val ax = toAsync(tx, rx)
-        txqEmptyVec(idx) := ax.io.empty
+        txqEmptyVec(idx) := ax.empty
         ax.suggestName(s"async_src_${chn.toLowerCase}")
     }
 

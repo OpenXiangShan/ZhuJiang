@@ -21,8 +21,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.amba.axi4._
 import freechips.rocketchip.amba.axi4.AXI4Parameters._
-import freechips.rocketchip.diplomacy.{AddressSet, RegionType, TransferSizes}
-import org.chipsalliance.diplomacy.lazymodule._
+import freechips.rocketchip.diplomacy._
 
 class AXI4Error(
   addressRange: Seq[AddressSet],
