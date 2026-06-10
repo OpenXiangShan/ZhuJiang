@@ -17,7 +17,7 @@ class InitializeHwaPorts extends Phase {
 
   private def doDefModules(in: Seq[DefModule]): Seq[DefModule] = {
     in.map({
-      case mm@firrtl.ir.Module(_, _, ports, body) =>
+      case mm@firrtl.ir.Module(_, _, _, _, ports, body) =>
         val hwaPorts = ports.filter(p => pattern.matches(p.name)).map(_.name)
         if(hwaPorts.isEmpty) {
           mm
@@ -50,12 +50,10 @@ class XsStage extends ChiselStage {
       targets = Seq(
         Dependency[chisel3.stage.phases.AddImplicitOutputFile],
         Dependency[chisel3.stage.phases.AddImplicitOutputAnnotationFile],
-        Dependency[chisel3.stage.phases.MaybeAspectPhase],
         Dependency[chisel3.stage.phases.AddSerializationAnnotations],
         Dependency[chisel3.stage.phases.Convert],
         Dependency[xs.utils.stage.InitializeHwaPorts],
         Dependency[chisel3.stage.phases.AddDedupGroupAnnotations],
-        Dependency[chisel3.stage.phases.MaybeInjectingPhase],
         Dependency[circt.stage.phases.AddImplicitOutputFile],
         Dependency[circt.stage.phases.CIRCT]
       ),

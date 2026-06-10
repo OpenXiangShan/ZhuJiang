@@ -7,7 +7,7 @@ import firrtl.annotations.{Annotation, HasSerializationHints}
 import firrtl.annotations.{IsModule, ReferenceTarget}
 
 import chisel3.{Data, SyncReadMem}
-import chisel3.experimental.{BaseModule, ChiselAnnotation}
+import chisel3.experimental.BaseModule
 
 import scala.collection.mutable
 
@@ -42,9 +42,12 @@ object ElaborationArtefactAnnotation {
   /** Emits [[ElaborationArtefactAnnotation]] for the given filename extension and tokens.
     */
   def annotate(filename: String, tokens: => Seq[Token]): Unit = {
-    chisel3.experimental.annotate(new ChiselAnnotation {
-      def toFirrtl = ElaborationArtefactAnnotation(filename, tokens.toList)
-    })
+    ElaborationArtefacts.add(filename, tokens.map {
+      case StringToken(value) => value
+      case ModulePathToken(target) => target.serialize
+      case MemoryPathToken(target) => target.serialize
+      case ReferencePathToken(target) => target.serialize
+    }.mkString)
   }
 }
 

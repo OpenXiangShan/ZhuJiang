@@ -10,7 +10,6 @@ import zhujiang.ZJModule
 import zhujiang.chi._
 import zhujiang.tilelink.{AOpcode, DFlit, DOpcode, TilelinkParams}
 import zhujiang.ZJParametersKey
-import coursier.core.shaded.sourcecode.Enclosing.Machine
 
 object MachineState {
     val width = 4

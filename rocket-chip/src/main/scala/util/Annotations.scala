@@ -3,8 +3,7 @@
 package freechips.rocketchip.util
 
 import chisel3._
-import chisel3.experimental.{annotate, ChiselAnnotation}
-
+import chisel3.experimental.Targetable
 import firrtl.annotations._
 
 import org.chipsalliance.diplomacy
@@ -37,18 +36,9 @@ case class GlobalConstantsAnnotation(target: Named, xLen: Int) extends SingleTar
   def duplicate(n: Named) = this.copy(n)
 }
 
-case class GlobalConstantsChiselAnnotation[T <: Product](target: InstanceId, xLen: Int) extends ChiselAnnotation {
-  def toFirrtl = GlobalConstantsAnnotation(target.toNamed, xLen)
-}
-
 /** Record a case class that was used to parameterize this target. */
 case class ParamsAnnotation(target: Named, paramsClassName: String, params: Map[String,Any]) extends SingleTargetAnnotation[Named] {
   def duplicate(n: Named) = this.copy(n)
-}
-
-case class ParamsChiselAnnotation[T <: Product](target: InstanceId, params: T) extends ChiselAnnotation {
-  private val paramMap = params.getClass.getDeclaredFields.map(_.getName).zip(params.productIterator).toMap
-  def toFirrtl = ParamsAnnotation(target.toNamed, params.getClass.getName, paramMap)
 }
 
 /** Record an address map. */
@@ -56,7 +46,7 @@ case class AddressMapAnnotation(target: Named, mapping: Seq[AddressMapEntry], la
   def duplicate(n: Named) = this.copy(n)
 
   def toUVM: String =
-    s"// Instance Name: ${target.serialize}\n" +
+    s"// Instance Name: ${target.toString}\n" +
       mapping.map(_.range.toUVM).mkString("\n")
 
   def toJSON: String =
@@ -71,17 +61,6 @@ case class RetimeModuleAnnotation(target: ModuleName) extends SingleTargetAnnota
 }
 
 /** Annotation capturing information about port slave devices. */
-case class SlaveAddressMapChiselAnnotation(
-    target: InstanceId,
-    addresses: Seq[AddressSet],
-    perms: ResourcePermissions) extends ChiselAnnotation {
-  private val range = AddressRange.fromSets(addresses)
-  def toFirrtl = AddressMapAnnotation(
-    target = target.toNamed,
-    mapping = range.map { r => AddressMapEntry(r, perms, Nil) },
-    label = "slaves")
-}
-
 /** Record information about a top-level port of the design */
 case class TopLevelPortAnnotation(
   target: ComponentName,
@@ -101,15 +80,19 @@ case class ResetVectorAnnotation(target: Named, resetVec: BigInt) extends Single
 /** Helper object containing methods for applying annotations to targets */
 object Annotated {
 
+  def annotateSingle[T](target: T, anno: Annotation)(implicit ev: Targetable[T]): Unit = {
+    chisel3.experimental.annotate(Seq(target))(Seq(anno))
+  }
+
   def srams(
-    component: InstanceId,
+    component: SyncReadMem[_],
     name: String,
     address_width: Int,
     data_width: Int,
     depth: BigInt,
     description: String,
     write_mask_granularity: Int): Unit = {
-    annotate(new ChiselAnnotation {def toFirrtl: Annotation = SRAMAnnotation(
+    annotateSingle(component, SRAMAnnotation(
       component.toNamed,
       address_width = address_width,
       name = name,
@@ -117,31 +100,32 @@ object Annotated {
       depth = depth,
       description = description,
       write_mask_granularity = write_mask_granularity
-    )})}
+    ))}
 
-  def interrupts(component: InstanceId, name: String, interrupts: Seq[Int]): Unit = {
-    annotate(new ChiselAnnotation {def toFirrtl: Annotation = InterruptsPortAnnotation(
+  def interrupts(component: RawModule, name: String, interrupts: Seq[Int]): Unit = {
+    annotateSingle(component, InterruptsPortAnnotation(
       component.toNamed,
       name,
       interrupts
-    )})
+    ))
   }
 
-  def resetVector(component: InstanceId, resetVec: BigInt): Unit = {
-    annotate(new ChiselAnnotation {def toFirrtl: Annotation = ResetVectorAnnotation(component.toNamed, resetVec)})
+  def resetVector(component: RawModule, resetVec: BigInt): Unit = {
+    annotateSingle(component, ResetVectorAnnotation(component.toNamed, resetVec))
   }
 
-  def constants(component: InstanceId, xLen: Int): Unit = {
-    annotate(GlobalConstantsChiselAnnotation(component, xLen ))
+  def constants(component: RawModule, xLen: Int): Unit = {
+    annotateSingle(component, GlobalConstantsAnnotation(component.toNamed, xLen))
   }
 
-  def params[T <: Product](component: InstanceId, params: T): T = {
-    annotate(ParamsChiselAnnotation(component, params))
+  def params[T <: Product](component: RawModule, params: T): T = {
+    val paramMap = params.getClass.getDeclaredFields.map(_.getName).zip(params.productIterator).toMap
+    annotateSingle(component, ParamsAnnotation(component.toNamed, params.getClass.getName, paramMap))
     params
   }
 
-  def addressMapping(component: InstanceId, mapping: Seq[AddressMapEntry]): Seq[AddressMapEntry] = {
-    annotate(new ChiselAnnotation { def toFirrtl = AddressMapAnnotation(component.toNamed, mapping, "mapping") })
+  def addressMapping(component: RawModule, mapping: Seq[AddressMapEntry]): Seq[AddressMapEntry] = {
+    annotateSingle(component, AddressMapAnnotation(component.toNamed, mapping, "mapping"))
     mapping
   }
 
@@ -152,7 +136,7 @@ object Annotated {
     names: Seq[String],
     width: Int,
     address: Seq[AddressSet] = Nil): T = {
-    annotate(new ChiselAnnotation { def toFirrtl = TopLevelPortAnnotation(data.toNamed, protocol, tags, names, width, address) })
+    annotateSingle(data, TopLevelPortAnnotation(data.toNamed, protocol, tags, names, width, address))
     data
   }
 }
@@ -184,7 +168,7 @@ trait DontTouch { self: RawModule =>
 
 /** Mix this into a Module class or instance to mark it for register retiming */
 trait ShouldBeRetimed { self: RawModule =>
-  chisel3.experimental.annotate(new ChiselAnnotation { def toFirrtl: RetimeModuleAnnotation = RetimeModuleAnnotation(self.toNamed) })
+  chisel3.experimental.annotate(self)(Seq(RetimeModuleAnnotation(self.toNamed)))
 }
 
 case class RegFieldDescMappingAnnotation(
@@ -278,7 +262,7 @@ object GenRegDescsAnno {
     )
     
     /* annotate the module with the registers */
-    annotate(new ChiselAnnotation { def toFirrtl = RegFieldDescMappingAnnotation(rawModule.toNamed, registersSer) })
+    Annotated.annotateSingle(rawModule, RegFieldDescMappingAnnotation(rawModule.toNamed, registersSer))
 
     mapping
   }
@@ -301,4 +285,3 @@ object GenRegDescsAnno {
           ("regfields" -> regDescs)))))
   }
 }
-
