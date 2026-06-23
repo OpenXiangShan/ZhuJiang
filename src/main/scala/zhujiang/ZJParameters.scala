@@ -186,6 +186,7 @@ case class ZJParameters(
     nodeAidBits: Int = 3,
     ciIdBits: Int = 4,
     dataBits: Int = 256,
+    cfgAxiDataBits: Int = 64,
     M: Int = 0,
     PB: Int = 0,
     E: Int = 0,
@@ -222,6 +223,8 @@ case class ZJParameters(
     lazy val beBits: Int        = dataBits / 8
     lazy val dataCheckBits: Int = if (DC) dataBits / 8 else 0
     lazy val poisonBits: Int    = if (P) dataBits / 64 else 0
+    require(cfgAxiDataBits >= 64)
+    require(dataBits % cfgAxiDataBits == 0)
     require(nodeIdBits >= 7 && nodeIdBits <= 11)
     private lazy val nrX            = nodeParams.filter(_.nodeType == NodeType.HF).groupBy(_.bankId).size
     private lazy val nrC            = nodeParams.count(_.nodeType == NodeType.CC)

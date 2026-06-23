@@ -90,7 +90,7 @@ class IoWrapper(nodes: Seq[Node])(implicit p: Parameters) extends ZJModule {
 
     private val icnHis = icnSeq.filter(_.node.nodeType == NodeType.HI)
     private val cfgDevSeq = for (icn <- icnHis) yield {
-        val bridge = Module(new AxiLiteBridge(icn.node, 64, 3))
+        val bridge = Module(new AxiLiteBridge(icn.node, zjParams.cfgAxiDataBits, 3))
         bridge.reset  := placeResetSync(icn.node.deviceName, icn)
         bridge.icn.rx <> icn.rx
         bridge.icn.tx <> icn.tx
