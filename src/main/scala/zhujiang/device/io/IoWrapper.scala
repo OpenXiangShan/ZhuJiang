@@ -43,7 +43,7 @@ class IoWrapper(nodes: Seq[Node])(implicit p: Parameters) extends ZJModule {
         rstGen.dft            := io.dft.toResetDftBundle
         if (mst) rstGen.reset := dev.resetState.get(0).asAsyncReset
         else rstGen.reset     := dev.resetState.get(1).asAsyncReset
-        rstGen.o_reset
+        rstGen.o_reset.asAsyncReset
     }
     private def attrStrGen(params: AxiDeviceParams, size: Int, idx: Int): String = {
         val attr = params.attr
