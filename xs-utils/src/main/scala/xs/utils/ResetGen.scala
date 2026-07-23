@@ -34,55 +34,19 @@ class ResetGenIO extends Bundle {
   val o_raw_reset = Output(AsyncReset())
 }
 
-class ResetGenInner(SYNC_NUM: Int = 2) extends BlackBox with HasBlackBoxInline {
-  require(SYNC_NUM > 1)
-  val io = IO(new ResetGenIO)
-  private val modName = s"${GlobalData.prefix}ResetGenInnerS${SYNC_NUM}"
-  override val desiredName = modName
-  setInline(s"$modName.sv",
-    s"""// VCS coverage exclude_file
-       |module $modName (
-       |  input  i_clock,
-       |  input  i_reset,
-       |  input  i_dft_lgc_rst_n,
-       |  input  i_dft_mode,
-       |  input  i_dft_scan_mode,
-       |  output o_reset,
-       |  output o_raw_reset
-       |);
-       |  wire reset = i_dft_mode ? ~i_dft_lgc_rst_n : i_reset;
-       |  reg [${SYNC_NUM - 1}:0] shifter;
-       |
-       |`ifndef SYNTHESIS
-       |  initial shifter = ${SYNC_NUM}'d${(1 << SYNC_NUM) - 1};
-       |`endif
-       |
-       |  always @(posedge i_clock or posedge reset) begin
-       |    if (reset) begin
-       |      shifter <= ${SYNC_NUM}'d${(1 << SYNC_NUM) - 1};
-       |    end else begin
-       |      shifter <= {1'b0, shifter[${SYNC_NUM - 1}:1]};
-       |    end
-       |  end
-       |  assign o_raw_reset = shifter[0];
-       |  assign o_reset = i_dft_scan_mode ? ~i_dft_lgc_rst_n : shifter[0];
-       |endmodule""".stripMargin)
-}
-
 class ResetGen(SYNC_NUM: Int = 2) extends Module {
+  require(SYNC_NUM > 1)
   override val desiredName = s"ResetGenS${SYNC_NUM}"
-  val o_reset = IO(Output(AsyncReset()))
+  val o_reset = IO(Output(Bool()))
   val dft = IO(Input(new DFTResetSignals()))
-  val raw_reset = IO(Output(AsyncReset()))
 
-  private val inner = Module(new ResetGenInner(SYNC_NUM))
-  inner.io.i_reset := reset
-  inner.io.i_clock := clock
-  inner.io.i_dft_lgc_rst_n := dft.lgc_rst_n
-  inner.io.i_dft_scan_mode := dft.scan_mode
-  inner.io.i_dft_mode := dft.mode
-  raw_reset := inner.io.o_raw_reset
-  o_reset := inner.io.o_reset
+  private val selectedReset = Mux(dft.mode, !dft.lgc_rst_n.asBool, reset.asBool).asAsyncReset
+  private val value = withClockAndReset(clock, selectedReset) {
+    val value = RegInit(((1L << SYNC_NUM) - 1).U(SYNC_NUM.W))
+    value := Cat(false.B, value(SYNC_NUM - 1, 1))
+    value
+  }
+  o_reset := Mux(dft.scan_mode, !dft.lgc_rst_n.asBool, value(0))
 }
 
 trait ResetNode
@@ -99,7 +63,7 @@ object ResetGen {
     } else {
       resetSync.dft := 0.U.asTypeOf(new DFTResetSignals)
     }
-    resetSync.o_reset
+    resetSync.o_reset.asAsyncReset
   }
 
   def apply(resetTree: ResetNode, reset: Reset, dft:Option[DFTResetSignals], sim: Boolean): Unit = {
@@ -113,7 +77,7 @@ object ResetGen {
           val next_rst = Wire(Reset())
           withReset(reset){
             val resetGen = Module(new ResetGen)
-            next_rst := resetGen.o_reset
+            next_rst := resetGen.o_reset.asAsyncReset
             if(dft.isDefined) {
               resetGen.dft := dft.get
             } else {
@@ -132,7 +96,7 @@ object ResetGen {
       if (!sim) {
         withReset(resetReg(i)) {
           val resetGen = Module(new ResetGen)
-          resetReg(i + 1) := resetGen.o_reset
+          resetReg(i + 1) := resetGen.o_reset.asAsyncReset
           if(dft.isDefined) {
             resetGen.dft := dft.get
           } else {
@@ -152,7 +116,7 @@ object ResetGen {
     if (!sim) {
       withReset(reset) {
         val resetGen = Module(new ResetGen)
-        resetReg := resetGen.o_reset
+        resetReg := resetGen.o_reset.asAsyncReset
         resetGen.dft := dft
       }
     }
