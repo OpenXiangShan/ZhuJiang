@@ -34,11 +34,51 @@ class ResetGenIO extends Bundle {
   val o_raw_reset = Output(AsyncReset())
 }
 
+// ResetGenInner remains as a BlackBox with inline SystemVerilog.
+// Pure Chisel Module approach was attempted twice but fails with gsim:
+// 1. RawModule + withClockAndReset: Chisel generates _T signals that gsim
+//    cannot resolve when inlining across ZhuJiang's deep module hierarchy
+//    (error: use of undeclared identifier '_io_o_raw_reset_T').
+// 2. Module (implicit clock): same _T signal issue; plus ResetGen callers
+//    sometimes override the implicit clock (resetGen.clock := ...), which
+//    creates additional complications for Chisel's clock domain tracking.
+//
+// The utility.ResetGen in mainline XiangShan works as pure Chisel because
+// it's instantiated at the TOP level where gsim handles the inlining
+// differently. ZhuJiang's ResetGen is deep in the module hierarchy where
+// gsim's cross-module optimization creates these undeclared references.
+//
+// A C++ implementation is provided in difftest/src/test/csrc/common/zhujiang-extmodule.cpp
+// as a passthrough (reset output = reset input). Synchronization is a timing
+// construct; passthrough is functionally correct for simulation.
 class ResetGenInner(SYNC_NUM: Int = 2) extends BlackBox with HasBlackBoxInline {
   require(SYNC_NUM > 1)
   val io = IO(new ResetGenIO)
   private val modName = s"${GlobalData.prefix}ResetGenInnerS${SYNC_NUM}"
   override val desiredName = modName
+
+  // Register C++ extension module for gsim compilation.
+  // Per-instance state cannot be maintained (static variables are shared);
+  // passthrough is functionally correct since synchronization is timing-only.
+  // NOTE: gsim strips the clock parameter from extmodule function signatures.
+  private val cppExtModule =
+    s"""
+       |void $modName (
+       |  unsigned char i_reset,
+       |  unsigned char i_dft_lgc_rst_n,
+       |  unsigned char i_dft_mode,
+       |  unsigned char i_dft_scan_mode,
+       |  unsigned char& o_reset,
+       |  unsigned char& o_raw_reset
+       |) {
+       |  unsigned char lgc_rst = (i_dft_lgc_rst_n == 0) ? 1 : 0;
+       |  unsigned char real_reset = i_dft_mode ? lgc_rst : i_reset;
+       |  o_raw_reset = real_reset;
+       |  o_reset = i_dft_scan_mode ? lgc_rst : real_reset;
+       |}
+       |""".stripMargin
+  difftest.DifftestModule.createCppExtModule(modName, cppExtModule)
+
   setInline(s"$modName.sv",
     s"""// VCS coverage exclude_file
        |module $modName (

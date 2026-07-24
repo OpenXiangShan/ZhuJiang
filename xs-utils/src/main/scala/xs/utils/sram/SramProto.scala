@@ -55,21 +55,38 @@ class SramArray(
   @public val R0 = if(!singlePort) Some(IO(new DpRamRIO(width, depth))) else None
   @public val W0 = if(!singlePort) Some(IO(new DpRamWIO(width, maskSegments, depth))) else None
 
-  private val mem = Module(new SramInstGen(singlePort, width, maskSegments, depth, delayRead))
-  mem.io.RW0.foreach(rw => {
-    rw <> RW0.get
-    rw.en := RW0.get.en
-    RW0.get.rdata := rw.rdata
-  })
-  mem.io.R0.foreach(r => {
-    r <> R0.get
-    r.en := R0.get.en
-    R0.get.data := r.data
-  })
-  mem.io.W0.foreach(w => {
-    w <> W0.get
-    w.en := W0.get.en
-  })
+  // Use SyncReadMem instead of SramInstGen blackbox so that gsim can
+  // generate C++ from the FIRRTL representation.
+  // Follow the same pattern as utility/src/main/scala/utility/sram/SramProto.scala
+  // to ensure compatible FIRRTL output (smem without ", new").
+  if (singlePort) {
+    val rw = RW0.get
+    if (maskSegments > 1) {
+      val dataType = Vec(maskSegments, UInt((width / maskSegments).W))
+      val array = SyncReadMem(depth, dataType)
+      rw.rdata := array.readWrite(rw.addr, rw.wdata.asTypeOf(dataType), rw.wmask.get.asBools, rw.en, rw.wmode, rw.clk).asUInt
+    } else {
+      val array = SyncReadMem(depth, UInt(width.W))
+      rw.rdata := array.readWrite(rw.addr, rw.wdata, rw.en, rw.wmode, rw.clk)
+    }
+  } else {
+    val r = R0.get
+    val w = W0.get
+    if (maskSegments > 1) {
+      val dataType = Vec(maskSegments, UInt((width / maskSegments).W))
+      val array = SyncReadMem(depth, dataType)
+      when(w.en) {
+        array.write(w.addr, w.data.asTypeOf(dataType), w.mask.get.asBools, w.clk)
+      }
+      r.data := array.read(r.addr, r.en, r.clk).asUInt
+    } else {
+      val array = SyncReadMem(depth, UInt(width.W))
+      when(w.en) {
+        array.write(w.addr, w.data, w.clk)
+      }
+      r.data := array.read(r.addr, r.en, r.clk)
+    }
+  }
 
   override def desiredName: String = sramName.getOrElse(super.desiredName)
 }
