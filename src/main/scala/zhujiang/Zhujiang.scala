@@ -51,7 +51,7 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
         rstGen.dft            := dft.toResetDftBundle
         if (mst) rstGen.reset := icn.resetState.get(0).asAsyncReset
         else rstGen.reset     := icn.resetState.get(1).asAsyncReset
-        rstGen.o_reset.asAsyncReset
+        rstGen.o_reset
     }
 
     private def placeSocket(icn: IcnBundle, idx: Option[Int]): SocketIcnSide = {

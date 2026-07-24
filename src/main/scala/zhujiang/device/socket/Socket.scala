@@ -108,9 +108,9 @@ class SocketIcnSide(node: Node)(implicit p: Parameters) extends Module with Sock
         connChn(asyncDevModule.io.icn.rx.debug, c2c.io.chi.tx.dbg)
 
         asyncDevModule.clock := io.socket.c2cClock.get
-        asyncDevModule.reset := resetGen.o_reset.asAsyncReset
+        asyncDevModule.reset := resetGen.o_reset
         c2c.clock            := io.socket.c2cClock.get
-        c2c.reset            := resetGen.o_reset.asAsyncReset
+        c2c.reset            := resetGen.o_reset
         resetGen.clock       := io.socket.c2cClock.get
         resetGen.dft         := DontCare
 
@@ -158,9 +158,9 @@ class SocketDevSide(node: Node)(implicit p: Parameters) extends Module with Sock
         connChn(asyncIcnModule.io.dev.rx.debug, c2c.io.chi.tx.dbg)
 
         asyncIcnModule.clock := io.socket.c2cClock.get
-        asyncIcnModule.reset := resetGen.o_reset.asAsyncReset
+        asyncIcnModule.reset := resetGen.o_reset
         c2c.clock            := io.socket.c2cClock.get
-        c2c.reset            := resetGen.o_reset.asAsyncReset
+        c2c.reset            := resetGen.o_reset
         resetGen.clock       := io.socket.c2cClock.get
         resetGen.dft         := DontCare
 

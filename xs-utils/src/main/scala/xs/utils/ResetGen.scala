@@ -37,16 +37,23 @@ class ResetGenIO extends Bundle {
 class ResetGen(SYNC_NUM: Int = 2) extends Module {
   require(SYNC_NUM > 1)
   override val desiredName = s"ResetGenS${SYNC_NUM}"
-  val o_reset = IO(Output(Bool()))
+  val o_reset = IO(Output(AsyncReset()))
   val dft = IO(Input(new DFTResetSignals()))
 
   private val selectedReset = Mux(dft.mode, !dft.lgc_rst_n.asBool, reset.asBool).asAsyncReset
   private val value = withClockAndReset(clock, selectedReset) {
-    val value = RegInit(((1L << SYNC_NUM) - 1).U(SYNC_NUM.W))
-    value := Cat(false.B, value(SYNC_NUM - 1, 1))
+    // Keep every synchronizer stage as a named one-bit register. gsim cannot
+    // safely use a UInt bit-select as an asynchronous-reset condition.
+    val value = Seq.tabulate(SYNC_NUM) { i =>
+      val stage = RegInit(true.B)
+      stage.suggestName(s"value_$i")
+      stage
+    }
+    value.dropRight(1).zip(value.drop(1)).foreach { case (stage, next) => stage := next }
+    value.last := false.B
     value
   }
-  o_reset := Mux(dft.scan_mode, !dft.lgc_rst_n.asBool, value(0))
+  o_reset := Mux(dft.scan_mode, !dft.lgc_rst_n.asBool, value.head).asAsyncReset
 }
 
 trait ResetNode
@@ -63,7 +70,7 @@ object ResetGen {
     } else {
       resetSync.dft := 0.U.asTypeOf(new DFTResetSignals)
     }
-    resetSync.o_reset.asAsyncReset
+    resetSync.o_reset
   }
 
   def apply(resetTree: ResetNode, reset: Reset, dft:Option[DFTResetSignals], sim: Boolean): Unit = {
@@ -77,7 +84,7 @@ object ResetGen {
           val next_rst = Wire(Reset())
           withReset(reset){
             val resetGen = Module(new ResetGen)
-            next_rst := resetGen.o_reset.asAsyncReset
+            next_rst := resetGen.o_reset
             if(dft.isDefined) {
               resetGen.dft := dft.get
             } else {
@@ -96,7 +103,7 @@ object ResetGen {
       if (!sim) {
         withReset(resetReg(i)) {
           val resetGen = Module(new ResetGen)
-          resetReg(i + 1) := resetGen.o_reset.asAsyncReset
+          resetReg(i + 1) := resetGen.o_reset
           if(dft.isDefined) {
             resetGen.dft := dft.get
           } else {
@@ -116,7 +123,7 @@ object ResetGen {
     if (!sim) {
       withReset(reset) {
         val resetGen = Module(new ResetGen)
-        resetReg := resetGen.o_reset.asAsyncReset
+        resetReg := resetGen.o_reset
         resetGen.dft := dft
       }
     }
