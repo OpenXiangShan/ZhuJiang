@@ -53,7 +53,12 @@ class ResetGen(SYNC_NUM: Int = 2) extends Module {
     value.last := false.B
     value
   }
-  o_reset := Mux(dft.scan_mode, !dft.lgc_rst_n.asBool, value.head).asAsyncReset
+  // Keep the asynchronous reset on a typed wire so gsim emits it as a
+  // persistent reset source rather than a function-local combinational value.
+  // Assertion is immediate; deassertion still waits for the synchronizer.
+  private val rawReset = Wire(AsyncReset())
+  rawReset := (selectedReset.asBool || value.head).asAsyncReset
+  o_reset := Mux(dft.scan_mode, !dft.lgc_rst_n.asBool, rawReset.asBool).asAsyncReset
 }
 
 trait ResetNode
