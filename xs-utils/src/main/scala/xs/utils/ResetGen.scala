@@ -25,8 +25,7 @@ class DFTResetSignals extends Bundle{
 }
 
 class ResetGenIO extends Bundle {
-  // Keep the blackbox clock as data so gsim retains it in the C++ call.
-  val i_clock = Input(Bool())
+  val i_clock = Input(Clock())
   val i_reset = Input(AsyncReset())
   val i_dft_lgc_rst_n = Input(AsyncReset())
   val i_dft_mode = Input(Bool())
@@ -43,56 +42,25 @@ class ResetGenInner(SYNC_NUM: Int = 2) extends BlackBox with HasBlackBoxInline {
 
   private val cppExtModule =
     s"""
-       |#include <array>
-       |#include <cstddef>
-       |#include <cstdint>
-       |#include <unordered_map>
-       |
-       |void $modName(
-       |  uint8_t i_clock,
-       |  uint8_t i_reset,
-       |  uint8_t i_dft_lgc_rst_n,
-       |  uint8_t i_dft_mode,
-       |  uint8_t i_dft_scan_mode,
-       |  uint8_t& o_reset,
-       |  uint8_t& o_raw_reset
+       |void $modName (
+       |  unsigned char i_reset,
+       |  unsigned char i_dft_lgc_rst_n,
+       |  unsigned char i_dft_mode,
+       |  unsigned char i_dft_scan_mode,
+       |  unsigned char& o_reset,
+       |  unsigned char& o_raw_reset
        |) {
-       |  struct ResetGenState {
-       |    uint8_t last_clock = 0;
-       |    std::array<uint8_t, $SYNC_NUM> stages = [] {
-       |      std::array<uint8_t, $SYNC_NUM> initial{};
-       |      initial.fill(1);
-       |      return initial;
-       |    }();
-       |  };
-       |
-       |  static std::unordered_map<const void*, ResetGenState> states;
-       |  ResetGenState& state = states[&o_raw_reset];
-       |
-       |  const bool lgc_reset = !static_cast<bool>(i_dft_lgc_rst_n);
-       |  const bool real_reset =
-       |    static_cast<bool>(i_dft_mode) ? lgc_reset : static_cast<bool>(i_reset);
-       |
-       |  if (real_reset) {
-       |    state.stages.fill(1);
-       |  } else if (!state.last_clock && i_clock) {
-       |    for (std::size_t i = 0; i + 1 < $SYNC_NUM; ++i) {
-       |      state.stages[i] = state.stages[i + 1];
-       |    }
-       |    state.stages[$SYNC_NUM - 1] = 0;
-       |  }
-       |
-       |  state.last_clock = i_clock;
-       |  o_raw_reset = static_cast<uint8_t>(real_reset || state.stages[0]);
-       |  o_reset = static_cast<uint8_t>(
-       |    i_dft_scan_mode ? lgc_reset : static_cast<bool>(o_raw_reset)
-       |  );
+       |  unsigned char lgc_rst = (i_dft_lgc_rst_n == 0) ? 1 : 0;
+       |  unsigned char real_reset = i_dft_mode ? lgc_rst : i_reset;
+       |  o_raw_reset = real_reset;
+       |  o_reset = i_dft_scan_mode ? lgc_rst : real_reset;
        |}
        |""".stripMargin
   difftest.DifftestModule.createCppExtModule(modName, cppExtModule)
 
   setInline(s"$modName.sv",
-    s"""module $modName (
+    s"""// VCS coverage exclude_file
+       |module $modName (
        |  input  i_clock,
        |  input  i_reset,
        |  input  i_dft_lgc_rst_n,
@@ -101,39 +69,37 @@ class ResetGenInner(SYNC_NUM: Int = 2) extends BlackBox with HasBlackBoxInline {
        |  output o_reset,
        |  output o_raw_reset
        |);
-       |  wire real_reset = i_dft_mode ? ~i_dft_lgc_rst_n : i_reset;
+       |  wire reset = i_dft_mode ? ~i_dft_lgc_rst_n : i_reset;
        |  reg [${SYNC_NUM - 1}:0] shifter;
        |
        |`ifndef SYNTHESIS
        |  initial shifter = ${SYNC_NUM}'d${(1 << SYNC_NUM) - 1};
        |`endif
        |
-       |  always @(posedge i_clock or posedge real_reset) begin
-       |    if (real_reset) begin
+       |  always @(posedge i_clock or posedge reset) begin
+       |    if (reset) begin
        |      shifter <= ${SYNC_NUM}'d${(1 << SYNC_NUM) - 1};
        |    end else begin
        |      shifter <= {1'b0, shifter[${SYNC_NUM - 1}:1]};
        |    end
        |  end
-       |
-       |  assign o_raw_reset = real_reset | shifter[0];
-       |  assign o_reset = i_dft_scan_mode ? ~i_dft_lgc_rst_n : o_raw_reset;
+       |  assign o_raw_reset = shifter[0];
+       |  assign o_reset = i_dft_scan_mode ? ~i_dft_lgc_rst_n : shifter[0];
        |endmodule""".stripMargin)
 }
 
 class ResetGen(SYNC_NUM: Int = 2) extends Module {
-  require(SYNC_NUM > 1)
   override val desiredName = s"ResetGenS${SYNC_NUM}"
   val o_reset = IO(Output(AsyncReset()))
   val dft = IO(Input(new DFTResetSignals()))
   val raw_reset = IO(Output(AsyncReset()))
 
   private val inner = Module(new ResetGenInner(SYNC_NUM))
-  inner.io.i_clock := clock.asBool
   inner.io.i_reset := reset
+  inner.io.i_clock := clock
   inner.io.i_dft_lgc_rst_n := dft.lgc_rst_n
-  inner.io.i_dft_mode := dft.mode
   inner.io.i_dft_scan_mode := dft.scan_mode
+  inner.io.i_dft_mode := dft.mode
   raw_reset := inner.io.o_raw_reset
   o_reset := inner.io.o_reset
 }
