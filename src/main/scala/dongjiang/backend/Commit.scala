@@ -184,9 +184,12 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.valid := valid & flagReg.intl.s.dataTask & taskReg.alr.reqDB
     io.dataTask.bits  := DontCare
 
-    val replLLC = flagReg.intl.s.wriDir & taskReg.cmt.wriLLC & !taskReg.dir.llc.hit
-    io.dataTask.bits.dataOp      := taskReg.cmt.dataOp
-    io.dataTask.bits.dataOp.save := taskReg.cmt.dataOp.save & !replLLC
+    val replLLC     = flagReg.intl.s.wriDir & taskReg.cmt.wriLLC & !taskReg.dir.llc.hit
+    val stashRefill = taskReg.chi.reqIs(StashOnceShared) && taskReg.cmt.dataOp.save
+    io.dataTask.bits.dataOp := taskReg.cmt.dataOp
+    // A stash miss has no data response to send back; its save-only task must
+    // still write the SN data from the DataBuffer into the HN DataStore.
+    io.dataTask.bits.dataOp.save := taskReg.cmt.dataOp.save & (!replLLC | stashRefill)
     io.dataTask.bits.perf.zip(taskReg.perf).foreach { case (sink, source) => sink := source }
     HAssert.withEn(PopCount(io.dataTask.bits.dataOp.asUInt) =/= 0.U, io.dataTask.valid)
 
@@ -360,11 +363,13 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
         val needWaitData     = allocHit & (alloc.task.returnDBID | alloc.alr.sDBID)
         val copyBackNeedData = alloc.chi.isCopyBackWrite & needWaitData
         val replLLC          = cmt.wriLLC & !taskReg.dir.llc.hit
+        val stashReq         = Mux(io.decListIn.valid, taskReg.chi.reqIs(StashOnceShared), alloc.chi.reqIs(StashOnceShared))
+        val stashRefill      = stashReq & cmt.dataOp.save
 
         flagNext.intl.s.decode   := stateNext.isFstTask | stateNext.isSecTask
         flagNext.intl.s.reqDB    := (task.needDB | cmt.dataOp.isValid) & !alrReqDB
         flagNext.intl.s.cmTask   := task.opsIsValid
-        flagNext.intl.s.dataTask := Mux(cmt.dataOp.onlySave, !replLLC, cmt.dataOp.isValid) & !alrSendData
+        flagNext.intl.s.dataTask := Mux(cmt.dataOp.onlySave, !replLLC | stashRefill, cmt.dataOp.isValid) & !alrSendData
         flagNext.intl.s.wriDir   := cmt.isWriDir
 
         flagNext.intl.w.cmResp   := flagNext.intl.s.cmTask
@@ -484,6 +489,8 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
             cf"\nCHI Send: ${flagReg.chi.s}\nCHI Wait: ${flagReg.chi.w}" +
             cf"\nState: ${stateReg.value}\n${taskReg.chi.getChiInst}\n${taskReg.dir.getStateInst(taskReg.chi.metaIdOH)}\n\n"
     )
+
+    ZJPerf.accumulate("zj_hn_stash_refill", io.replTask.fire && taskReg.chi.reqIs(StashOnceShared))
 }
 
 class Commit(implicit p: Parameters) extends DJModule {
