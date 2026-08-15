@@ -16,6 +16,7 @@ import xs.utils.debug._
 import dongjiang.frontend.decode._
 import dongjiang.data._
 import xs.utils.ParallelLookUp
+import xs.utils.perf.XSPerfAccumulate
 import dongjiang.backend.GetDecRes
 import dongjiang.frontend.decode.Decode._
 
@@ -139,6 +140,15 @@ class Decode(implicit p: Parameters) extends DJModule {
 
     HAssert(!(respCompData_s3 & cleanUnuseDB_s3))
     HAssert.withEn(io.cleanDB_s3.bits.isHalfSize, io.cleanDB_s3.valid)
+
+    val stashReq_s3 = validReg_s3 & taskReg_s3.chi.reqIs(StashOnceShared)
+    XSPerfAccumulate(
+        Seq(
+            ("zj_hn_stash_req", stashReq_s3),
+            ("zj_hn_stash_hit", stashReq_s3 & respDir_s3.llc.hit),
+            ("zj_hn_stash_miss", stashReq_s3 & !respDir_s3.llc.hit)
+        )
+    )
 
     HardwareAssertion.placePipe(1)
 }

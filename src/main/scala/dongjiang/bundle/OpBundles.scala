@@ -33,7 +33,8 @@ trait HasChiOp { this: DJBundle with HasChiChannel =>
         ReadShared,
         ReadUnique,
         ReadPreferUnique,
-        MakeReadUnique
+        MakeReadUnique,
+        StashOnceShared
     )
 
     def isNonAllocatingRead: Bool = reqIs(
@@ -52,7 +53,6 @@ trait HasChiOp { this: DJBundle with HasChiChannel =>
         Evict,
         StashOnceUnique,
         StashOnceSepUnique,
-        StashOnceShared,
         StashOnceSepShared,
         CleanShared,
         CleanSharedPersist,

@@ -18,6 +18,7 @@ import dongjiang.frontend.PosClean
 import dongjiang.backend.CmtState._
 import chisel3.experimental.BundleLiterals._
 import dongjiang.frontend.decode.Decode.{w_ci, w_si, w_sti, w_ti}
+import xs.utils.perf.XSPerfAccumulate
 
 object CmtState {
     val width   = 3
@@ -442,6 +443,8 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
             cf"\nCHI Send: ${flagReg.chi.s}\nCHI Wait: ${flagReg.chi.w}" +
             cf"\nState: ${stateReg.value}\n${taskReg.chi.getChiInst}\n${taskReg.dir.getStateInst(taskReg.chi.metaIdOH)}\n\n"
     )
+
+    XSPerfAccumulate(Seq(("zj_hn_stash_refill", io.replTask.fire && taskReg.chi.reqIs(StashOnceShared))))
 }
 
 class Commit(implicit p: Parameters) extends DJModule {

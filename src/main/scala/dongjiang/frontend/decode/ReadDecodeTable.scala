@@ -140,5 +140,18 @@ object Read_LAN_DCT_DMT {
         )
     )
 
-    def table: Seq[DecodeType] = readNoSnpTable ++ readOnceTable ++ Seq(readNotSharedDirty, readUnique)
+    def stashOnceShared: DecodeType = (
+        fromLAN | toLAN | reqIs(StashOnceShared) | noOrder | allocate | ewa | isFullSize,
+        Seq(
+            (sfMiss | llcIs(I)) -> first(read(ReadNoSnp) | needDB, datIs(CompData) | respIs(UC), cdop("save") | cmtRsp(Comp) | resp(I) | wriLLC(UC)),
+            (sfMiss | llcIs(SC)) -> first(cmtRsp(Comp) | resp(I)),
+            (sfMiss | llcIs(UC)) -> first(cmtRsp(Comp) | resp(I)),
+            (sfMiss | llcIs(UD)) -> first(cmtRsp(Comp) | resp(I)),
+            (srcMiss | othHit | llcIs(I)) -> first(cmtRsp(Comp) | resp(I)),
+            (srcHit | othMiss | llcIs(I)) -> first(cmtRsp(Comp) | resp(I)),
+            (srcHit | othHit | llcIs(I)) -> first(cmtRsp(Comp) | resp(I))
+        )
+    )
+
+    def table: Seq[DecodeType] = readNoSnpTable ++ readOnceTable ++ Seq(readNotSharedDirty, readUnique, stashOnceShared)
 }
