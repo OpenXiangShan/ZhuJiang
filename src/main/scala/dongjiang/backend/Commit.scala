@@ -484,6 +484,8 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
             cf"\nCHI Send: ${flagReg.chi.s}\nCHI Wait: ${flagReg.chi.w}" +
             cf"\nState: ${stateReg.value}\n${taskReg.chi.getChiInst}\n${taskReg.dir.getStateInst(taskReg.chi.metaIdOH)}\n\n"
     )
+
+    ZJPerf.accumulate("zj_hn_stash_refill", io.replTask.fire && taskReg.chi.reqIs(StashOnceShared))
 }
 
 class Commit(implicit p: Parameters) extends DJModule {
