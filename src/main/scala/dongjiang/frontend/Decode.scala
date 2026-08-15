@@ -140,5 +140,13 @@ class Decode(implicit p: Parameters) extends DJModule {
     HAssert(!(respCompData_s3 & cleanUnuseDB_s3))
     HAssert.withEn(io.cleanDB_s3.bits.isHalfSize, io.cleanDB_s3.valid)
 
+    ZJPerf.accumulate(
+        Seq(
+            ("zj_hn_stash_req", validReg_s3 & taskReg_s3.chi.reqIs(StashOnceShared)),
+            ("zj_hn_stash_hit", validReg_s3 & taskReg_s3.chi.reqIs(StashOnceShared) & respDir_s3.llc.hit),
+            ("zj_hn_stash_miss", validReg_s3 & taskReg_s3.chi.reqIs(StashOnceShared) & !respDir_s3.llc.hit)
+        )
+    )
+
     HardwareAssertion.placePipe(1)
 }
