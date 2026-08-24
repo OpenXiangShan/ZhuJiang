@@ -31,8 +31,8 @@ class Backend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
         val rxDat = Flipped(Valid(new DataFlit))
 
         val writeDir = Decoupled(new DJBundle {
-            val llc = Valid(new DirEntry("llc") with HasPackHnIdx)
-            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx)
+            val llc = Valid(new DirEntry("llc") with HasPackHnIdx with HasDirectAlloc)
+            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx with HasDirectAlloc)
         })
 
         val respDir = new DJBundle {
@@ -99,6 +99,8 @@ class Backend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
     val wDirQ = Module(new Queue(chiselTypeOf(io.writeDir.bits), entries = 1, pipe = true, flow = false))
     wDirQ.io.enq <> replCM.io.writeDir
     io.writeDir  <> wDirQ.io.deq
+    replCM.io.writeDirDone.valid := io.writeDir.fire && io.writeDir.bits.sf.valid && io.writeDir.bits.sf.bits.directAlloc
+    replCM.io.writeDirDone.bits.hnTxnID := io.writeDir.bits.sf.bits.hnIdx.getTxnID
 
     io.updHnTxnID := replCM.io.updHnTxnID
     io.reqDB      <> fastArb(Seq(replCM.io.reqDB, commit.io.reqDB))

@@ -40,6 +40,10 @@ trait HasDirBaseMsg extends DJBundle { this: DJBundle with HasDirParam =>
     def othHit(metaIdOH: UInt): Bool = hit & othVec(metaIdOH).reduce(_ | _)
 }
 
+trait HasDirectAlloc { this: DJBundle =>
+    val directAlloc = Bool()
+}
+
 class DirEntry(dirType: String)(implicit p: Parameters) extends DJBundle with HasDirParam with HasAddr with HasDirBaseMsg {
     override def paramType: String = dirType
     override def addrType: String = dirType

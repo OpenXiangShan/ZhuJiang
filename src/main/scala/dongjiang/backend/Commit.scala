@@ -208,6 +208,7 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.replTask.bits.wriSF        := taskReg.cmt.isWriSF
     io.replTask.bits.dir.sf.hit   := taskReg.dir.sf.hit
     io.replTask.bits.dir.sf.wayOH := taskReg.dir.sf.wayOH
+    io.replTask.bits.directAllocSF := taskReg.cmt.isWriSF & !taskReg.dir.sf.hit & taskReg.dir.sf.metaIsInv
     io.replTask.bits.dir.sf.metaVec.map(_.state).zipWithIndex.foreach { case (s, i) =>
         val metaIdOH = taskReg.chi.metaIdOH
         val srcVec   = VecInit(metaIdOH.asBools)

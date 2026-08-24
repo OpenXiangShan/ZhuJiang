@@ -7,7 +7,7 @@ import dongjiang._
 import dongjiang.backend.ReplaceState._
 import dongjiang.bundle._
 import dongjiang.data._
-import dongjiang.directory.DirEntry
+import dongjiang.directory.{DirEntry, HasDirectAlloc}
 import dongjiang.frontend._
 import dongjiang.frontend.decode._
 import dongjiang.utils._
@@ -36,6 +36,7 @@ object ReplaceState {
     val WAITRESP  = 0xe.U
     val CLEANPOST = 0xf.U
     val CLEANPOSR = 0x10.U
+    val WAITWRIDIR = 0x11.U
 }
 
 object ReplacementWritePolicy {
@@ -74,6 +75,7 @@ trait HasReplMes { this: DJBundle =>
     def isCleanPosT = state === CLEANPOST
     def isCleanPosR = state === CLEANPOSR
     def isCleanPoS = isCleanPosT | isCleanPosR
+    def isWaitWriDir = state === WAITWRIDIR
 }
 
 class ReplaceEntry(implicit p: Parameters) extends DJModule {
@@ -93,9 +95,10 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         val cleanPoS    = Decoupled(new PosClean)
 
         val writeDir = Decoupled(new DJBundle {
-            val llc = Valid(new DirEntry("llc") with HasPackHnIdx)
-            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx)
+            val llc = Valid(new DirEntry("llc") with HasPackHnIdx with HasDirectAlloc)
+            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx with HasDirectAlloc)
         })
+        val writeDirDone = Flipped(Valid(new HnTxnID))
 
         val respDir = new DJBundle {
             val llc = Flipped(Valid(new DirEntry("llc") with HasHnTxnID))
@@ -131,6 +134,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         alloc.dir          := io.alloc.bits.dir
         alloc.wriSF        := io.alloc.bits.wriSF
         alloc.wriLLC       := io.alloc.bits.wriLLC
+        alloc.directAllocSF := io.alloc.bits.directAllocSF
         alloc.hnTxnID      := io.alloc.bits.hnTxnID
         alloc.repl.hnTxnID := io.alloc.bits.hnTxnID
         alloc.qos          := io.alloc.bits.qos
@@ -158,25 +162,28 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
 
     io.writeDir.valid := reg.isWriDir
 
-    io.writeDir.bits.llc.valid        := reg.wriLLC
-    io.writeDir.bits.llc.bits.addr    := reg.hnTxnID
-    io.writeDir.bits.llc.bits.wayOH   := reg.dir.llc.wayOH
-    io.writeDir.bits.llc.bits.hit     := reg.dir.llc.hit
-    io.writeDir.bits.llc.bits.metaVec := reg.dir.llc.metaVec
-    io.writeDir.bits.llc.bits.hnIdx   := reg.getHnIdx
+    io.writeDir.bits.llc.valid            := reg.wriLLC
+    io.writeDir.bits.llc.bits.addr        := reg.hnTxnID
+    io.writeDir.bits.llc.bits.wayOH       := reg.dir.llc.wayOH
+    io.writeDir.bits.llc.bits.hit         := reg.dir.llc.hit
+    io.writeDir.bits.llc.bits.metaVec     := reg.dir.llc.metaVec
+    io.writeDir.bits.llc.bits.hnIdx       := reg.getHnIdx
+    io.writeDir.bits.llc.bits.directAlloc := false.B
 
-    io.writeDir.bits.sf.valid        := reg.wriSF
-    io.writeDir.bits.sf.bits.addr    := reg.hnTxnID
-    io.writeDir.bits.sf.bits.wayOH   := reg.dir.sf.wayOH
-    io.writeDir.bits.sf.bits.hit     := reg.dir.sf.hit
-    io.writeDir.bits.sf.bits.metaVec := reg.dir.sf.metaVec
-    io.writeDir.bits.sf.bits.hnIdx   := reg.getHnIdx
+    io.writeDir.bits.sf.valid            := reg.wriSF
+    io.writeDir.bits.sf.bits.addr        := reg.hnTxnID
+    io.writeDir.bits.sf.bits.wayOH       := reg.dir.sf.wayOH
+    io.writeDir.bits.sf.bits.hit         := reg.dir.sf.hit
+    io.writeDir.bits.sf.bits.metaVec     := reg.dir.sf.metaVec
+    io.writeDir.bits.sf.bits.hnIdx       := reg.getHnIdx
+    io.writeDir.bits.sf.bits.directAlloc := reg.isDirectAllocSF
 
     HAssert.withEn(io.writeDir.bits.llc.bits.hit, io.writeDir.valid & io.writeDir.bits.llc.valid & io.writeDir.bits.llc.bits.meta.isInvalid)
     HAssert.withEn(io.writeDir.bits.sf.bits.hit, io.writeDir.valid & io.writeDir.bits.sf.valid & io.writeDir.bits.sf.bits.metaIsInv)
 
     HAssert.withEn(io.writeDir.bits.llc.bits.meta.isValid, io.writeDir.valid & io.writeDir.bits.llc.valid & !io.writeDir.bits.llc.bits.hit)
     HAssert.withEn(io.writeDir.bits.sf.bits.metaIsVal, io.writeDir.valid & io.writeDir.bits.sf.valid & !io.writeDir.bits.sf.bits.hit)
+    HAssert.withEn(!reg.isReplSF, reg.isDirectAllocSF)
 
     val sfRespHit   = reg.isWaitDir & io.respDir.sf.valid & io.respDir.sf.bits.hnTxnID === reg.hnTxnID
     val llcRespHit  = reg.isWaitDir & io.respDir.llc.valid & io.respDir.llc.bits.hnTxnID === reg.hnTxnID
@@ -272,6 +279,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     val cmRespData  = io.cmResp.bits.taskInst.valid & io.cmResp.bits.taskInst.channel === ChiChannel.DAT
     val cmRespHit   = reg.isValid & io.cmResp.valid & io.cmResp.bits.hnTxnID === reg.repl.hnTxnID
     val dataRespHit = reg.isValid & io.dataResp.valid & io.dataResp.bits.hnTxnID === reg.hnTxnID
+    val writeDirDoneHit = reg.isWaitWriDir & io.writeDirDone.valid & io.writeDirDone.bits.hnTxnID === reg.hnTxnID
     switch(reg.state) {
 
         is(FREE) {
@@ -287,7 +295,11 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         }
 
         is(WRIDIR) {
-            when(io.writeDir.fire) { next.state := Mux(reg.isReplDIR, WAITDIR, RESPCMT) }
+            when(io.writeDir.fire) { next.state := Mux(reg.isReplDIR, WAITDIR, Mux(reg.isDirectAllocSF, WAITWRIDIR, RESPCMT)) }
+        }
+
+        is(WAITWRIDIR) {
+            when(writeDirDoneHit) { next.state := RESPCMT }
         }
 
         is(WAITDIR) {
@@ -348,6 +360,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     HAssert.withEn(reg.isReqPoS, reg.isValid & io.reqPoS.fire)
     HAssert.withEn(reg.isWaitPoS, reg.isValid & posRespHit)
     HAssert.withEn(reg.isWriDir, reg.isValid & io.writeDir.fire)
+    HAssert.withEn(reg.isWaitWriDir, reg.isValid & writeDirDoneHit)
     HAssert.withEn(reg.isWaitDir, reg.isValid & dirRespHit)
     HAssert.withEn(reg.isUpdHnTxnID, reg.isValid & io.updHnTxnID.fire)
     HAssert.withEn(reg.isReqDB, reg.isValid & io.reqDB.fire)
@@ -396,9 +409,10 @@ class ReplaceCM(implicit p: Parameters) extends DJModule {
         val cleanPoS    = Decoupled(new PosClean)
 
         val writeDir = Decoupled(new DJBundle {
-            val llc = Valid(new DirEntry("llc") with HasPackHnIdx)
-            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx)
+            val llc = Valid(new DirEntry("llc") with HasPackHnIdx with HasDirectAlloc)
+            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx with HasDirectAlloc)
         })
+        val writeDirDone = Flipped(Valid(new HnTxnID))
 
         val respDir = new DJBundle {
             val llc = Flipped(Valid(new DirEntry("llc") with HasHnTxnID))
@@ -445,6 +459,7 @@ class ReplaceCM(implicit p: Parameters) extends DJModule {
         e.io.respDir     := io.respDir
         e.io.dataResp    := io.dataResp
         e.io.posRespVec2 := io.posRespVec2
+        e.io.writeDirDone := io.writeDirDone
     }
 
     fastQosRRArb(entries.map(_.io.reqDB), io.reqDB)
