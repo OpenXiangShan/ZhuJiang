@@ -13,11 +13,13 @@ import dongjiang.utils._
 import dongjiang.bundle._
 import dongjiang.directory._
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import dongjiang.frontend.decode._
 import dongjiang.data._
 import xs.utils.ParallelLookUp
 import dongjiang.backend.GetDecRes
 import dongjiang.frontend.decode.Decode._
+import utility.GTimer
 
 class FstDec(implicit p: Parameters) extends Module {
     val io = IO(new Bundle {
@@ -90,6 +92,24 @@ class Decode(implicit p: Parameters) extends DJModule {
     dontTouch(decList_s2)
     dontTouch(decList_s3)
 
+    private val isCacheableReq_s3 = validReg_s3 && taskReg_s3.chi.channel === ChiChannel.REQ && taskReg_s3.chi.memAttr.cacheable
+    private val isReadNsd_s3      = isCacheableReq_s3 && taskReg_s3.chi.opcode === ReadNotSharedDirty
+    private val isReadUnique_s3   = isCacheableReq_s3 && taskReg_s3.chi.opcode === ReadUnique
+    private val isReadOnce_s3     = isCacheableReq_s3 && taskReg_s3.chi.opcode === ReadOnce
+    HomeWrapperPerf.accumulate("zj_hn_readnsd", isReadNsd_s3)
+    HomeWrapperPerf.accumulate("zj_hn_readnsd_llc_hit", isReadNsd_s3 && respDir_s3.llc.hit)
+    HomeWrapperPerf.accumulate("zj_hn_readnsd_llc_miss", isReadNsd_s3 && !respDir_s3.llc.hit)
+    HomeWrapperPerf.accumulate("zj_hn_readunique", isReadUnique_s3)
+    HomeWrapperPerf.accumulate("zj_hn_readunique_llc_hit", isReadUnique_s3 && respDir_s3.llc.hit)
+    HomeWrapperPerf.accumulate("zj_hn_readonce", isReadOnce_s3)
+    HomeWrapperPerf.accumulate("zj_hn_readonce_llc_hit", isReadOnce_s3 && respDir_s3.llc.hit)
+
+    val respCompData_s3 = validReg_s3 & !taskCode_s3.isValid & cmtCode_s3.sendResp &
+        cmtCode_s3.channel === ChiChannel.DAT & cmtCode_s3.opcode === CompData
+    val demandRead_s3 = isReadNsd_s3 || isReadUnique_s3
+    val localReadNsdHit_s3 = isReadNsd_s3 && respDir_s3.llc.hit && respCompData_s3
+    val perfTimer = GTimer()
+
     io.cmtTask_s3.valid            := validReg_s3
     io.cmtTask_s3.bits.hnTxnID     := taskReg_s3.hnIdx.getTxnID
     io.cmtTask_s3.bits.qos         := taskReg_s3.qos
@@ -103,10 +123,13 @@ class Decode(implicit p: Parameters) extends DJModule {
     io.cmtTask_s3.bits.task        := taskCode_s3
     io.cmtTask_s3.bits.cmt         := Mux(taskCode_s3.isValid, 0.U.asTypeOf(new CommitCode), cmtCode_s3)
     io.cmtTask_s3.bits.ds.set(taskReg_s3.addr, respDir_s3.llc.way)
+    io.cmtTask_s3.bits.perf.valid        := localReadNsdHit_s3
+    io.cmtTask_s3.bits.perf.demandRead   := demandRead_s3
+    io.cmtTask_s3.bits.perf.llcHit       := respDir_s3.llc.hit
+    io.cmtTask_s3.bits.perf.ingressCycle := taskReg_s3.chi.perfIngressCycle
+    io.cmtTask_s3.bits.perf.decodeCycle  := perfTimer
     HardwareAssertion.withEn(taskCode_s3.isValid | cmtCode_s3.isValid, validReg_s3)
     HardwareAssertion.withEn(respDir_s3.sf.metaIsVal, validReg_s3 & taskCode_s3.snoop)
-
-    val respCompData_s3 = validReg_s3 & !taskCode_s3.isValid & cmtCode_s3.sendResp & cmtCode_s3.channel === ChiChannel.DAT & cmtCode_s3.opcode === CompData
 
     io.reqDB_s3.valid        := respCompData_s3
     io.reqDB_s3.bits.hnTxnID := taskReg_s3.hnIdx.getTxnID
@@ -130,7 +153,34 @@ class Decode(implicit p: Parameters) extends DJModule {
     io.fastData_s3.bits.dataOp.send := true.B
     io.fastData_s3.bits.dataVec     := taskReg_s3.chi.dataVec
     io.fastData_s3.bits.ds.set(taskReg_s3.addr, respDir_s3.llc.way)
+    io.fastData_s3.bits.perf := io.cmtTask_s3.bits.perf
     HardwareAssertion.withEn(cmtCode_s3.dataOp.isValid, io.fastData_s3.valid)
+
+    val localHitFastData = localReadNsdHit_s3 && io.fastData_s3.fire
+    val demandLlcHitFastData = demandRead_s3 && respDir_s3.llc.hit && io.fastData_s3.fire
+    val localHitDeferredReqDB = localReadNsdHit_s3 && !io.reqDB_s3.ready
+    val localHitDeferredDataTask = localReadNsdHit_s3 && io.reqDB_s3.ready && !io.fastData_s3.ready
+    HAssert.withEn(
+        PopCount(Seq(localHitFastData, localHitDeferredReqDB, localHitDeferredDataTask)) === 1.U,
+        localReadNsdHit_s3
+    )
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_local_hit_fast_data_fire", localHitFastData),
+            ("zj_local_hit_deferred_reqdb", localHitDeferredReqDB),
+            ("zj_local_hit_deferred_datatask", localHitDeferredDataTask)
+        )
+    )
+    HomeWrapperPerf.latency(
+        "zj_local_hit_ingress_to_decode",
+        perfTimer - taskReg_s3.chi.perfIngressCycle,
+        localReadNsdHit_s3
+    )
+    HomeWrapperPerf.latency(
+        "zj_hn_llc_hit_fast_return",
+        perfTimer - taskReg_s3.chi.perfIngressCycle,
+        demandLlcHitFastData
+    )
 
     val cleanUnuseDB_s3 = validReg_s3 & taskReg_s3.alr.reqDB & !taskReg_s3.chi.isFullSize & !(respDir_s3.sf.hit | respDir_s3.llc.hit)
     io.cleanDB_s3.valid        := cleanUnuseDB_s3

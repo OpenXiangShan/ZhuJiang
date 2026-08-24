@@ -10,6 +10,7 @@ import dongjiang.bundle.ChiChannel._
 import xs.utils.debug._
 import zhujiang.chi.ReqOpcode._
 import dongjiang.bundle._
+import utility.GTimer
 
 class ReqToChiTask(implicit p: Parameters) extends DJModule {
 
@@ -35,6 +36,7 @@ class ReqToChiTask(implicit p: Parameters) extends DJModule {
     task.chi.channel := REQ
     task.chi.opcode  := req.Opcode
     task.chi.txnID   := req.TxnID
+    task.chi.perfIngressCycle := GTimer()
 
     task.chi.order      := req.Order
     task.chi.snpAttr    := req.SnpAttr
@@ -85,6 +87,7 @@ class SnpToChiTask(implicit p: Parameters) extends DJModule {
     task.chi.channel := SNP
     task.chi.opcode  := snp.Opcode
     task.chi.txnID   := snp.TxnID
+    task.chi.perfIngressCycle := 0.U
 
     task.chi.order      := DontCare
     task.chi.snpAttr    := DontCare

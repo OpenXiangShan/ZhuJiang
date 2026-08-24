@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import dongjiang.frontend.TaskState._
 import chisel3.experimental.BundleLiterals._
 
@@ -163,6 +164,27 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8)(implicit p: Pa
     }
 
     io.working := Cat(entries.map(_.io.state.valid)).orR
+
+    private val validEntryCount = PopCount(entries.map(_.io.state.valid))
+    private val sendEntryCount  = PopCount(entries.map(_.io.state.value === SEND))
+    private val waitEntryCount  = PopCount(entries.map(_.io.state.value === WAIT))
+    private val sleepEntryCount = PopCount(entries.map(_.io.state.value === SLEEP))
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_taskbuf_input_fire", io.chiTaskIn.fire),
+            ("zj_taskbuf_input_stall", io.chiTaskIn.valid && !io.chiTaskIn.ready),
+            ("zj_taskbuf_output_fire", io.chiTask_s0.fire),
+            ("zj_taskbuf_output_stall", io.chiTask_s0.valid && !io.chiTask_s0.ready),
+            ("zj_taskbuf_valid_entries_sum", validEntryCount),
+            ("zj_taskbuf_send_entries_sum", sendEntryCount),
+            ("zj_taskbuf_wait_entries_sum", waitEntryCount),
+            ("zj_taskbuf_sleep_entries_sum", sleepEntryCount),
+            ("zj_taskbuf_lock_cycle", io.lockTask),
+            ("zj_taskbuf_working_cycle", validEntryCount.orR)
+        )
+    )
+    HomeWrapperPerf.max("zj_taskbuf_valid_entries_max", validEntryCount, true.B)
+    HomeWrapperPerf.max("zj_taskbuf_wait_entries_max", waitEntryCount, true.B)
 
     HAssert.placePipe(1)
 }
