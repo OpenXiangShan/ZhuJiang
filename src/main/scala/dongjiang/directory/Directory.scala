@@ -21,8 +21,8 @@ class Directory(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
         val rRespVec = Vec(djparam.nrDirBank, Valid(new DirMsg))
 
         val write = Flipped(Decoupled(new DJBundle {
-            val llc = Valid(new DirEntry("llc") with HasPackHnIdx)
-            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx)
+            val llc = Valid(new DirEntry("llc") with HasPackHnIdx with HasDirectAlloc)
+            val sf  = Valid(new DirEntry("sf") with HasPackHnIdx with HasDirectAlloc)
         }))
 
         val wResp = new DJBundle {

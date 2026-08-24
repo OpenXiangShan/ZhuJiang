@@ -38,7 +38,9 @@ class CMResp(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPa
 class ReplTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPackDirMsg with HasQoS {
     val wriSF  = Bool()
     val wriLLC = Bool()
-    def isReplSF = wriSF & !dir.sf.hit
+    val directAllocSF = Bool()
+    def isDirectAllocSF = wriSF & !dir.sf.hit & directAllocSF
+    def isReplSF = wriSF & !dir.sf.hit & !directAllocSF
     def isReplLLC = wriLLC & !dir.llc.hit
     def isReplDIR = isReplSF | isReplLLC
 }
