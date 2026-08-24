@@ -18,6 +18,7 @@ import dongjiang.frontend.PosClean
 import dongjiang.backend.CmtState._
 import chisel3.experimental.BundleLiterals._
 import dongjiang.frontend.decode.Decode.{w_ci, w_si, w_sti, w_ti}
+import zhujiang.perf.ZJPerf
 
 object CmtState {
     val width   = 3
@@ -95,8 +96,9 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
 
         val cmResp = Flipped(Valid(new CMResp))
 
-        val replTask = Decoupled(new ReplTask)
-        val replResp = Flipped(Valid(new HnTxnID))
+        val replTask    = Decoupled(new ReplTask)
+        val replResp    = Flipped(Valid(new HnTxnID))
+        val sfWritePerf = Option.when(ZJPerf.enabled)(Output(new SFWritePerf))
 
         val reqDB    = Decoupled(new HnTxnID with HasDataVec with HasQoS)
         val dataTask = Decoupled(new DataTask)
@@ -185,6 +187,7 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     val replLLC = flagReg.intl.s.wriDir & taskReg.cmt.wriLLC & !taskReg.dir.llc.hit
     io.dataTask.bits.dataOp      := taskReg.cmt.dataOp
     io.dataTask.bits.dataOp.save := taskReg.cmt.dataOp.save & !replLLC
+    io.dataTask.bits.perf.zip(taskReg.perf).foreach { case (sink, source) => sink := source }
     HAssert.withEn(PopCount(io.dataTask.bits.dataOp.asUInt) =/= 0.U, io.dataTask.valid)
 
     io.dataTask.bits.txDat.DBID    := io.hnTxnID
@@ -205,9 +208,9 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.replTask.bits.hnTxnID := io.hnTxnID
     io.replTask.bits.qos     := taskReg.qos
 
-    io.replTask.bits.wriSF        := taskReg.cmt.isWriSF
-    io.replTask.bits.dir.sf.hit   := taskReg.dir.sf.hit
-    io.replTask.bits.dir.sf.wayOH := taskReg.dir.sf.wayOH
+    io.replTask.bits.wriSF         := taskReg.cmt.isWriSF
+    io.replTask.bits.dir.sf.hit    := taskReg.dir.sf.hit
+    io.replTask.bits.dir.sf.wayOH  := taskReg.dir.sf.wayOH
     io.replTask.bits.directAllocSF := taskReg.cmt.isWriSF & !taskReg.dir.sf.hit & taskReg.dir.sf.metaIsInv
     io.replTask.bits.dir.sf.metaVec.map(_.state).zipWithIndex.foreach { case (s, i) =>
         val metaIdOH = taskReg.chi.metaIdOH
@@ -226,6 +229,44 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.replTask.bits.dir.llc.hit                := taskReg.dir.llc.hit
     io.replTask.bits.dir.llc.wayOH              := taskReg.dir.llc.wayOH
     io.replTask.bits.dir.llc.metaVec.head.state := taskReg.cmt.llcState
+
+    ZJPerf.whenEnabled {
+        val sfSrcHit          = taskReg.dir.sf.srcHit(taskReg.chi.metaIdOH)
+        val sfOthHit          = taskReg.dir.sf.othHit(taskReg.chi.metaIdOH)
+        val effectiveLLCState = Mux(taskReg.dir.llc.hit, taskReg.dir.llc.meta.state, ChiState.I)
+        val replacementPerf   = io.replTask.bits.perf.get
+        replacementPerf.fromSrc  := taskReg.cmt.wriSRC
+        replacementPerf.fromSnp  := taskReg.cmt.wriSNP
+        replacementPerf.opcode   := taskReg.chi.opcode
+        replacementPerf.allocate := taskReg.chi.memAttr.allocate
+        replacementPerf.sfSrcHit := sfSrcHit
+        replacementPerf.sfOthHit := sfOthHit
+        replacementPerf.llcState := effectiveLLCState
+
+        // This is the final handshake that retains the decoded request provenance.
+        val sfSrcWriteCommit = io.replTask.fire && taskReg.cmt.wriSRC
+        val sfWritePerf      = io.sfWritePerf.get
+        sfWritePerf.commit            := sfSrcWriteCommit
+        sfWritePerf.sfHit             := sfSrcWriteCommit && taskReg.dir.sf.hit
+        sfWritePerf.sfMiss            := sfSrcWriteCommit && !taskReg.dir.sf.hit
+        sfWritePerf.srcHit            := sfSrcWriteCommit && sfSrcHit
+        sfWritePerf.othHit            := sfSrcWriteCommit && sfOthHit
+        sfWritePerf.noSrcOrOthHit     := sfSrcWriteCommit && !sfSrcHit && !sfOthHit
+        sfWritePerf.allocate          := sfSrcWriteCommit && taskReg.chi.memAttr.allocate
+        sfWritePerf.noAllocate        := sfSrcWriteCommit && !taskReg.chi.memAttr.allocate
+        sfWritePerf.readNsd           := sfSrcWriteCommit && taskReg.chi.opcode === ReadNotSharedDirty
+        sfWritePerf.readUnique        := sfSrcWriteCommit && taskReg.chi.opcode === ReadUnique
+        sfWritePerf.writeBackFull     := sfSrcWriteCommit && taskReg.chi.opcode === WriteBackFull
+        sfWritePerf.writeEvictOrEvict := sfSrcWriteCommit && taskReg.chi.opcode === WriteEvictOrEvict
+        sfWritePerf.otherOpcode := sfSrcWriteCommit && taskReg.chi.opcode =/= ReadNotSharedDirty &&
+            taskReg.chi.opcode =/= ReadUnique && taskReg.chi.opcode =/= WriteBackFull &&
+            taskReg.chi.opcode =/= WriteEvictOrEvict
+        sfWritePerf.llcI        := sfSrcWriteCommit && effectiveLLCState === ChiState.I
+        sfWritePerf.llcSC       := sfSrcWriteCommit && effectiveLLCState === ChiState.SC
+        sfWritePerf.llcUC       := sfSrcWriteCommit && effectiveLLCState === ChiState.UC
+        sfWritePerf.llcUD       := sfSrcWriteCommit && effectiveLLCState === ChiState.UD
+        sfWritePerf.allocCommit := sfSrcWriteCommit && !taskReg.dir.sf.hit
+    }
 
     cmTask.chi            := taskReg.chi
     cmTask.chi.channel    := Mux(taskReg.task.snoop, ChiChannel.SNP, ChiChannel.REQ)
@@ -473,6 +514,37 @@ class Commit(implicit p: Parameters) extends DJModule {
     val entries = Seq.fill(djparam.nrCommit) { Module(new CommitEntry()) }
     val trdDec  = Module(new Decode("Third"))
     val fthDec  = Module(new Decode("Fourth"))
+
+    ZJPerf.whenEnabled {
+        def anySFWrite(select: SFWritePerf => Bool): Bool =
+            entries.map(entry => select(entry.io.sfWritePerf.get)).reduce(_ | _)
+
+        val sfWriteCommitVec = VecInit(entries.map(_.io.sfWritePerf.get.commit))
+        HAssert(PopCount(sfWriteCommitVec) <= 1.U)
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_sf_src_write_commit", anySFWrite(_.commit)),
+                ("zj_sf_src_write_sf_hit", anySFWrite(_.sfHit)),
+                ("zj_sf_src_write_sf_miss", anySFWrite(_.sfMiss)),
+                ("zj_sf_src_write_src_hit", anySFWrite(_.srcHit)),
+                ("zj_sf_src_write_oth_hit", anySFWrite(_.othHit)),
+                ("zj_sf_src_write_no_src_or_oth_hit", anySFWrite(_.noSrcOrOthHit)),
+                ("zj_sf_src_write_allocate", anySFWrite(_.allocate)),
+                ("zj_sf_src_write_no_allocate", anySFWrite(_.noAllocate)),
+                ("zj_sf_src_write_readnsd", anySFWrite(_.readNsd)),
+                ("zj_sf_src_write_readunique", anySFWrite(_.readUnique)),
+                ("zj_sf_src_write_writebackfull", anySFWrite(_.writeBackFull)),
+                ("zj_sf_src_write_writeevictorevict", anySFWrite(_.writeEvictOrEvict)),
+                ("zj_sf_src_write_other_opcode", anySFWrite(_.otherOpcode)),
+                ("zj_sf_src_write_llc_i", anySFWrite(_.llcI)),
+                ("zj_sf_src_write_llc_sc", anySFWrite(_.llcSC)),
+                ("zj_sf_src_write_llc_uc", anySFWrite(_.llcUC)),
+                ("zj_sf_src_write_llc_ud", anySFWrite(_.llcUD)),
+                ("zj_sf_alloc_commit", anySFWrite(_.allocCommit)),
+                ("zj_sf_direct_alloc_commit", io.replTask.fire && io.replTask.bits.isDirectAllocSF)
+            )
+        )
+    }
 
     entries.grouped(nrCommit).zipWithIndex.foreach { case (e0, i) =>
         e0.grouped(posWays - 2).zipWithIndex.foreach { case (e1, j) =>

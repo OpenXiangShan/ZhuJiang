@@ -9,6 +9,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug.{HAssert, HardwareAssertion}
+import zhujiang.perf.ZJPerf
 import xs.utils.sram.{DualPortSramTemplate, SinglePortSramTemplate}
 import freechips.rocketchip.util.ReplacementPolicy
 import xs.utils.mbist.MbistPipeline
@@ -207,9 +208,9 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val newReplMesReg_d4 = RegEnable(newReplMes_d3, shiftReg.req(D3))
     val respReg_d4       = RegEnable(resp_d3, shiftReg.req(D3))
 
-    val ownerWayInRange_d0 = io.write.bits.hnIdx.pos.way < lockWays.U
-    val ownerWayIdx_d0     = io.write.bits.hnIdx.pos.way(log2Ceil(lockWays) - 1, 0)
-    val ownerReservation_d0 = WireInit(0.U.asTypeOf(chiselTypeOf(reservationTable.head.head)))
+    val ownerWayInRange_d0       = io.write.bits.hnIdx.pos.way < lockWays.U
+    val ownerWayIdx_d0           = io.write.bits.hnIdx.pos.way(log2Ceil(lockWays) - 1, 0)
+    val ownerReservation_d0      = WireInit(0.U.asTypeOf(chiselTypeOf(reservationTable.head.head)))
     val directAllocOwnerMatch_d0 = WireInit(false.B)
     if (dirType == "sf") {
         when(ownerWayInRange_d0) {
@@ -418,9 +419,9 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
                 hnIdx.pos.set := i.U
                 hnIdx.pos.way := j.U
 
-                val clearReservationByWrite = writeDirectAlloc_d0 && io.write.bits.hnIdx.asUInt === hnIdx.asUInt
+                val clearReservationByWrite  = writeDirectAlloc_d0 && io.write.bits.hnIdx.asUInt === hnIdx.asUInt
                 val clearReservationByUnlock = io.unlock.valid && io.unlock.bits.hnIdx.asUInt === hnIdx.asUInt
-                val reserveInvalidSfMiss = pendingAllocValid_d3 && req_d3.hnIdx.asUInt === hnIdx.asUInt
+                val reserveInvalidSfMiss     = pendingAllocValid_d3 && req_d3.hnIdx.asUInt === hnIdx.asUInt
 
                 when(clearReservationByWrite || clearReservationByUnlock) {
                     reservationNext(i)(j).valid := false.B
@@ -432,11 +433,13 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
             }
         }
 
-        val newReservationCount_d3 = PopCount(reservationNext.flatten.map(reservation =>
-            reservation.valid &
-                (reservation.set === reqSet_d3) &
-                (reservation.way === selWay_d3)
-        ))
+        val newReservationCount_d3 = PopCount(
+            reservationNext.flatten.map(reservation =>
+                reservation.valid &
+                    (reservation.set === reqSet_d3) &
+                    (reservation.way === selWay_d3)
+            )
+        )
         HAssert.withEn(newReservationCount_d3 === 1.U, pendingAllocValid_d3, "Duplicate SF reservation")
 
         when(pendingAllocValid_d3 || writeDirectAlloc_d0 || io.unlock.valid) {
@@ -455,6 +458,55 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     HAssert.withEn(io.write.bits.metaIsVal, io.write.valid && io.write.bits.directAlloc)
     if (dirType == "sf") {
         HAssert.withEn(directAllocOwnerMatch_d0, io.write.valid && io.write.bits.directAlloc)
+    }
+
+    ZJPerf.whenEnabled {
+        val respToRepl               = io.resp.valid && io.resp.bits.toRepl
+        val respToReplVictimValid    = respToRepl && io.resp.bits.metaVec.map(_.isValid).reduce(_ | _)
+        val respToReplVictimInvalid  = respToRepl && !io.resp.bits.metaVec.map(_.isValid).reduce(_ | _)
+        val readReplVictimValid_d3   = readRepl_d3 && resp_d3.metaVec.map(_.isValid).reduce(_ | _)
+        val readReplVictimInvalid_d3 = readRepl_d3 && !resp_d3.metaVec.map(_.isValid).reduce(_ | _)
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_dirbase_read_valid", io.read.valid),
+                ("zj_dirbase_read_fire", io.read.fire),
+                ("zj_dirbase_read_stall", io.read.valid && !io.read.ready),
+                ("zj_dirbase_read_stall_reset", io.read.valid && !io.read.ready && !resetDoneReg),
+                ("zj_dirbase_read_stall_tag_meta", io.read.valid && !io.read.ready && !shiftReg.tagMetaReady),
+                ("zj_dirbase_read_stall_repl_will_write", io.read.valid && !io.read.ready && shiftReg.replWillWrite),
+                ("zj_dirbase_read_stall_write_valid", io.read.valid && !io.read.ready && io.write.valid),
+                ("zj_dirbase_write_valid", io.write.valid),
+                ("zj_dirbase_write_fire", io.write.fire),
+                ("zj_dirbase_write_stall", io.write.valid && !io.write.ready),
+                ("zj_dirbase_write_stall_reset", io.write.valid && !io.write.ready && !resetDoneReg),
+                ("zj_dirbase_write_stall_tag_meta", io.write.valid && !io.write.ready && !shiftReg.tagMetaReady),
+                ("zj_dirbase_write_stall_repl_will_write", io.write.valid && !io.write.ready && shiftReg.replWillWrite),
+                ("zj_dirbase_tag_meta_not_ready_cycle", !shiftReg.tagMetaReady),
+                ("zj_dirbase_repl_will_write_cycle", shiftReg.replWillWrite),
+                ("zj_dirbase_shift_read_cycle", shiftReg.read.orR),
+                ("zj_dirbase_shift_write_cycle", shiftReg.write.orR),
+                ("zj_dirbase_shift_repl_cycle", shiftReg.repl.orR),
+                ("zj_dirbase_resp_valid", io.resp.valid),
+                (s"zj_dirbase_${dirType}_resp_to_repl", respToRepl),
+                (s"zj_dirbase_${dirType}_resp_to_repl_victim_valid", respToReplVictimValid),
+                (s"zj_dirbase_${dirType}_resp_to_repl_victim_invalid", respToReplVictimInvalid),
+                ("zj_dirbase_unlock_valid", io.unlock.valid),
+                ("zj_dirbase_d3_read_miss", read_d3 && !hit_d3),
+                ("zj_dirbase_d3_read_hit", read_d3 && hit_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl", readRepl_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl_victim_valid", readReplVictimValid_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl_victim_invalid", readReplVictimInvalid_d3),
+                (s"zj_dirbase_${dirType}_d2_sel_is_using", shiftReg.req(D2) && selIsUsing_d2),
+                (s"zj_dirbase_${dirType}_pending_d3_conflict", shiftReg.req(D2) && pendingAllocSetMatch_d2),
+                (s"zj_dirbase_${dirType}_invalid_miss_reserve", pendingAllocValid_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl_has_invalid", readRepl_d3 && hasInvalid_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl_no_invalid", readRepl_d3 && !hasInvalid_d3),
+                (s"zj_dirbase_${dirType}_direct_alloc_fire", writeDirectAlloc_d0),
+                (s"zj_dirbase_${dirType}_direct_alloc_owner_match", writeDirectAlloc_d0 && directAllocOwnerMatch_d0),
+                ("zj_dirbase_d3_write", write_d3),
+                ("zj_dirbase_d3_wri_repl", wriRepl_d3)
+            )
+        )
     }
 
     HardwareAssertion.placePipe(1)

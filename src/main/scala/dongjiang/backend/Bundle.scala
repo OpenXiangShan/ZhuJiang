@@ -37,14 +37,66 @@ class CMResp(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPa
     val toRepl = Bool()
 }
 
+class ReplacementPerfTrace(implicit p: Parameters) extends DJBundle {
+    val fromSrc  = Bool()
+    val fromSnp  = Bool()
+    val opcode   = UInt(ReqOpcode.width.W)
+    val allocate = Bool()
+    val sfSrcHit = Bool()
+    val sfOthHit = Bool()
+    val llcState = UInt(ChiState.width.W)
+}
+
 class ReplTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPackDirMsg with HasQoS {
-    val wriSF  = Bool()
-    val wriLLC = Bool()
+    val wriSF         = Bool()
+    val wriLLC        = Bool()
     val directAllocSF = Bool()
+    val perf          = Option.when(ZJPerf.enabled)(new ReplacementPerfTrace)
     def isDirectAllocSF = wriSF & !dir.sf.hit & directAllocSF
     def isReplSF = wriSF & !dir.sf.hit & !directAllocSF
     def isReplLLC = wriLLC & !dir.llc.hit
     def isReplDIR = isReplSF | isReplLLC
+}
+
+class SFWritePerf(implicit p: Parameters) extends DJBundle {
+    val commit            = Bool()
+    val sfHit             = Bool()
+    val sfMiss            = Bool()
+    val srcHit            = Bool()
+    val othHit            = Bool()
+    val noSrcOrOthHit     = Bool()
+    val allocate          = Bool()
+    val noAllocate        = Bool()
+    val readNsd           = Bool()
+    val readUnique        = Bool()
+    val writeBackFull     = Bool()
+    val writeEvictOrEvict = Bool()
+    val otherOpcode       = Bool()
+    val llcI              = Bool()
+    val llcSC             = Bool()
+    val llcUC             = Bool()
+    val llcUD             = Bool()
+    val allocCommit       = Bool()
+}
+
+class SFReplacementPerf(implicit p: Parameters) extends DJBundle {
+    val event             = Bool()
+    val fromSrc           = Bool()
+    val fromSnp           = Bool()
+    val allocate          = Bool()
+    val noAllocate        = Bool()
+    val srcHit            = Bool()
+    val othHit            = Bool()
+    val noSrcOrOthHit     = Bool()
+    val readNsd           = Bool()
+    val readUnique        = Bool()
+    val writeBackFull     = Bool()
+    val writeEvictOrEvict = Bool()
+    val otherOpcode       = Bool()
+    val llcI              = Bool()
+    val llcSC             = Bool()
+    val llcUC             = Bool()
+    val llcUD             = Bool()
 }
 
 class UpdHnTxnID(implicit p: Parameters) extends DJBundle {

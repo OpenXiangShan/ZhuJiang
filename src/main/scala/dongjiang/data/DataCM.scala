@@ -9,9 +9,11 @@ import dongjiang.backend.UpdHnTxnID
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.ZJPerf
 import xs.utils.queue.FastQueue
 import dongjiang.data.CTRLSTATE._
 import chisel3.experimental.BundleLiterals._
+import xs.utils.GTimer
 
 object CTRLSTATE {
     val width = 3
@@ -73,11 +75,16 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
         val readToDS    = Decoupled(new ReadDB)
         val readToCHI   = Decoupled(new ReadDB)
 
-        val release   = Decoupled(new DBIDVec with HasDataVec)
-        val dsWriDB   = Flipped(Valid(new DCID with HasBeatNum))
-        val txDatFire = Flipped(Valid(new DCID with HasBeatNum))
-        val dbWriDS   = Flipped(Valid(new DCID with HasBeatNum))
-        val txDatBits = Output(new DataFlit)
+        val release           = Decoupled(new DBIDVec with HasDataVec)
+        val dsWriDB           = Flipped(Valid(new DCID with HasBeatNum))
+        val txDatFire         = Flipped(Valid(new DCID with HasBeatNum))
+        val dbWriDS           = Flipped(Valid(new DCID with HasBeatNum))
+        val dsWriteCommit     = Option.when(ZJPerf.enabled)(Output(Bool()))
+        val dsSaveWriteCommit = Option.when(ZJPerf.enabled)(Output(Bool()))
+        val dsReplWriteCommit = Option.when(ZJPerf.enabled)(Output(Bool()))
+        val txDatBits         = Output(new DataFlit)
+        val localHitPerf      = Option.when(ZJPerf.enabled)(Output(new LocalHitLatencyPerf))
+        val llcReturnPerf     = Option.when(ZJPerf.enabled)(Output(new LlcReturnPerf))
 
         val state = Valid(new HnTxnID with HasDataVec with HasDBIDVec)
     })
@@ -222,6 +229,9 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
     )
 
     val dbWriDSHit = reg.isValid & io.dbWriDS.valid & io.dbWriDS.bits.dcid === io.dcid
+    io.dsWriteCommit.foreach(_ := dbWriDSHit)
+    io.dsSaveWriteCommit.foreach(_ := dbWriDSHit && reg.isSave)
+    io.dsReplWriteCommit.foreach(_ := dbWriDSHit && reg.isRepl)
     setNextXXV(
         "save",
         next.sSaveVec,
@@ -247,6 +257,82 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
                 true.B            -> reg.critical
             )
         )
+    }
+
+    ZJPerf.whenEnabled {
+        val perfTimer              = GTimer()
+        val perfLocalHitReg        = RegInit(false.B)
+        val perfDemandReadReg      = RegInit(false.B)
+        val perfLlcHitReg          = RegInit(false.B)
+        val perfDsReqSeenReg       = RegInit(false.B)
+        val perfDsRespSeenReg      = RegInit(false.B)
+        val perfTxDatSeenReg       = RegInit(false.B)
+        val perfDemandTxDatSeenReg = RegInit(false.B)
+        val perfIngressCycleReg    = Reg(UInt(64.W))
+        val perfDecodeCycleReg     = Reg(UInt(64.W))
+        val perfDataTaskCycleReg   = Reg(UInt(64.W))
+        val perfDsReqCycleReg      = Reg(UInt(64.W))
+        val perfDsRespCycleReg     = Reg(UInt(64.W))
+        val taskPerf               = io.task.bits.perf.get
+        val localHitTask           = taskHit && taskPerf.valid
+        val firstLocalHitDsReq     = perfLocalHitReg && !perfDsReqSeenReg && io.readToDB.fire
+        val firstLocalHitDsResp    = perfLocalHitReg && perfDsReqSeenReg && !perfDsRespSeenReg && dsWriDBHit
+        val firstLocalHitTxDat     = perfLocalHitReg && !perfTxDatSeenReg && txDatHit
+        val firstDemandReturnTxDat = perfDemandReadReg && !perfDemandTxDatSeenReg && txDatHit
+
+        when(io.alloc.fire) {
+            perfLocalHitReg        := false.B
+            perfDemandReadReg      := false.B
+            perfLlcHitReg          := false.B
+            perfDsReqSeenReg       := false.B
+            perfDsRespSeenReg      := false.B
+            perfTxDatSeenReg       := false.B
+            perfDemandTxDatSeenReg := false.B
+        }
+        when(localHitTask) {
+            perfLocalHitReg      := true.B
+            perfIngressCycleReg  := taskPerf.ingressCycle
+            perfDecodeCycleReg   := taskPerf.decodeCycle
+            perfDataTaskCycleReg := perfTimer
+        }
+        when(taskHit && taskPerf.demandRead) {
+            perfDemandReadReg   := true.B
+            perfLlcHitReg       := taskPerf.llcHit
+            perfIngressCycleReg := taskPerf.ingressCycle
+        }
+        when(firstLocalHitDsReq) {
+            perfDsReqSeenReg  := true.B
+            perfDsReqCycleReg := perfTimer
+        }
+        when(firstLocalHitDsResp) {
+            perfDsRespSeenReg  := true.B
+            perfDsRespCycleReg := perfTimer
+        }
+        when(firstLocalHitTxDat) {
+            perfTxDatSeenReg := true.B
+        }
+        when(firstDemandReturnTxDat) {
+            perfDemandTxDatSeenReg := true.B
+        }
+
+        val localHitPerf = io.localHitPerf.get
+        localHitPerf.decodeToDataTask.valid := localHitTask
+        localHitPerf.decodeToDataTask.bits  := perfTimer - taskPerf.decodeCycle
+        localHitPerf.dataTaskToDsReq.valid  := firstLocalHitDsReq
+        localHitPerf.dataTaskToDsReq.bits   := perfTimer - perfDataTaskCycleReg
+        localHitPerf.dsReqToDsResp.valid    := firstLocalHitDsResp
+        localHitPerf.dsReqToDsResp.bits     := perfTimer - perfDsReqCycleReg
+        localHitPerf.dsRespToTxDat.valid    := firstLocalHitTxDat
+        localHitPerf.dsRespToTxDat.bits     := perfTimer - Mux(firstLocalHitDsResp, perfTimer, perfDsRespCycleReg)
+        localHitPerf.decodeToTxDat.valid    := firstLocalHitTxDat
+        localHitPerf.decodeToTxDat.bits     := perfTimer - perfDecodeCycleReg
+        localHitPerf.ingressToTxDat.valid   := firstLocalHitTxDat
+        localHitPerf.ingressToTxDat.bits    := perfTimer - perfIngressCycleReg
+
+        val llcReturnPerf = io.llcReturnPerf.get
+        llcReturnPerf.valid   := firstDemandReturnTxDat
+        llcReturnPerf.llcHit  := perfLlcHitReg
+        llcReturnPerf.latency := perfTimer - perfIngressCycleReg
     }
 
     val updHnTxnIDHit = reg.isValid & io.updHnTxnID.valid & io.updHnTxnID.bits.before === reg.task.hnTxnID
@@ -321,6 +407,24 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
 
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
+
+    ZJPerf.accumulate(
+        Seq(
+            ("zj_datactrl_alloc_fire", io.alloc.fire),
+            ("zj_datactrl_task_hit", taskHit),
+            ("zj_datactrl_clean_hit", cleanHit),
+            ("zj_datactrl_valid_cycle", reg.isValid),
+            ("zj_datactrl_wait_alloc_cycle", reg.isAlloc),
+            ("zj_datactrl_wait_repl_cycle", reg.isRepl),
+            ("zj_datactrl_wait_read_cycle", reg.isRead),
+            ("zj_datactrl_wait_send_cycle", reg.isSend),
+            ("zj_datactrl_wait_save_cycle", reg.isSave),
+            ("zj_datactrl_wait_resp_cycle", reg.isResp),
+            ("zj_datactrl_wait_clean_cycle", reg.isClean),
+            ("zj_datactrl_resp_fire", io.resp.fire),
+            ("zj_datactrl_release_fire", io.release.fire)
+        )
+    )
 
     HAssert.checkTimeout(reg.isFree | updHnTxnIDHit, TIMEOUT_DATACM, cf"TIMEOUT: DataCM State[${reg.state}]")
 }
@@ -458,6 +562,61 @@ class DataCM(implicit p: Parameters) extends DJModule {
     }
 
     connectReadToX(VecInit(entries.map(_.io.readToCHI)), io.readToCHI)
+
+    ZJPerf.whenEnabled {
+        def collectLocalHitLatency(name: String, events: Seq[ValidIO[UInt]]): Unit = {
+            val valid = VecInit(events.map(_.valid))
+            HAssert(PopCount(valid) <= 1.U)
+            ZJPerf.distribution(name, Mux1H(valid, events.map(_.bits)), valid.asUInt.orR)
+        }
+
+        collectLocalHitLatency("zj_local_hit_decode_to_data_task", entries.map(_.io.localHitPerf.get.decodeToDataTask))
+        collectLocalHitLatency("zj_local_hit_data_task_to_ds_req", entries.map(_.io.localHitPerf.get.dataTaskToDsReq))
+        collectLocalHitLatency("zj_local_hit_ds_req_to_ds_resp", entries.map(_.io.localHitPerf.get.dsReqToDsResp))
+        collectLocalHitLatency("zj_local_hit_ds_resp_to_txdat", entries.map(_.io.localHitPerf.get.dsRespToTxDat))
+        collectLocalHitLatency("zj_local_hit_decode_to_txdat", entries.map(_.io.localHitPerf.get.decodeToTxDat))
+        collectLocalHitLatency("zj_local_hit_ingress_to_txdat", entries.map(_.io.localHitPerf.get.ingressToTxDat))
+
+        def collectLlcReturnLatency(name: String, llcHit: Bool): Unit = {
+            val perfs = entries.map(_.io.llcReturnPerf.get)
+            val valid = VecInit(perfs.map(perf => perf.valid && perf.llcHit === llcHit))
+            HAssert(PopCount(valid) <= 1.U)
+            ZJPerf.distribution(name, Mux1H(valid, perfs.map(_.latency)), valid.asUInt.orR)
+        }
+
+        collectLlcReturnLatency("zj_hn_llc_hit_deferred_return", true.B)
+        collectLlcReturnLatency("zj_hn_llc_miss_return", false.B)
+
+        val validDcidCount    = PopCount(entries.map(_.io.state.valid))
+        val noFreeDcid        = io.reqDBIn.valid && !hasFreeDC
+        val reqDBOutStall     = io.reqDBIn.valid && hasFreeDC && !io.reqDBOut.ready
+        val dsWriteCommit     = entries.map(_.io.dsWriteCommit.get).reduce(_ | _)
+        val dsSaveWriteCommit = entries.map(_.io.dsSaveWriteCommit.get).reduce(_ | _)
+        val dsReplWriteCommit = entries.map(_.io.dsReplWriteCommit.get).reduce(_ | _)
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_datacm_req_db_in_valid", io.reqDBIn.valid),
+                ("zj_datacm_req_db_in_fire", io.reqDBIn.fire),
+                ("zj_datacm_no_free_dcid", noFreeDcid),
+                ("zj_datacm_req_db_out_stall", reqDBOutStall),
+                ("zj_datacm_valid_dcid_sum", validDcidCount),
+                ("zj_datacm_task_valid", io.task.valid),
+                ("zj_datacm_resp_valid", io.resp.valid),
+                ("zj_datacm_release_valid", io.release.valid),
+                ("zj_datacm_read_to_db_fire", io.readToDB.fire),
+                ("zj_datacm_read_to_db_stall", io.readToDB.valid && !io.readToDB.ready),
+                ("zj_datacm_read_to_ds_fire", io.readToDS.fire),
+                ("zj_datacm_read_to_ds_stall", io.readToDS.valid && !io.readToDS.ready),
+                ("zj_datacm_read_to_chi_fire", io.readToCHI.fire),
+                ("zj_datacm_read_to_chi_stall", io.readToCHI.valid && !io.readToCHI.ready),
+                ("zj_datacm_has_repl_cycle", hasRepl),
+                ("zj_ds_write_commit", dsWriteCommit),
+                ("zj_ds_save_write_commit", dsSaveWriteCommit),
+                ("zj_ds_repl_write_commit", dsReplWriteCommit)
+            )
+        )
+        ZJPerf.max("zj_datacm_valid_dcid", validDcidCount, true.B)
+    }
 
     HAssert(!(RegNext(io.readToDB.fire) ^ (PopCount(entries.map(e => RegNext(e.io.readToDB.fire))) === 1.U)))
     HAssert(!(RegNext(io.readToDS.fire) ^ (PopCount(entries.map(e => RegNext(e.io.readToDS.fire))) === 1.U)))
