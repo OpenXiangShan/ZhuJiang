@@ -38,6 +38,12 @@ object ReplaceState {
     val CLEANPOSR = 0x10.U
 }
 
+object ReplacementWritePolicy {
+    def issueWrite(toLan: Bool, dirty: Bool): Bool = !toLan || dirty
+
+    def saveLocalCleanVictim(toLan: Bool, dirty: Bool): Bool = toLan && !dirty
+}
+
 trait HasReplMes { this: DJBundle =>
 
     val state = UInt(ReplaceState.width.W)
@@ -178,6 +184,10 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     val needReplSF  = io.respDir.sf.valid & io.respDir.sf.bits.metaVec.map(_.isValid).reduce(_ | _)
     val needReplLLC = io.respDir.llc.valid & io.respDir.llc.bits.metaVec.head.isValid
     val respAddr    = Mux(io.respDir.sf.valid, io.respDir.sf.bits.addr, io.respDir.llc.bits.addr)
+    val localCleanLLCVictim = llcRespHit && ReplacementWritePolicy.saveLocalCleanVictim(
+        io.respDir.llc.bits.Addr.isToLAN(io.config.ci),
+        io.respDir.llc.bits.meta.isDirty
+    )
     HAssert(!(io.respDir.sf.valid & io.respDir.llc.valid))
     HAssert.withEn(reg.isReplSF, sfRespHit)
     HAssert.withEn(reg.isReplLLC, llcRespHit)
@@ -281,7 +291,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         }
 
         is(WAITDIR) {
-            when(dirRespHit) { next.state := Mux(sfRespHit, RESPCMT, Mux(needReplLLC, UPDATEID, SAVEDATA)) }
+            when(dirRespHit) { next.state := Mux(sfRespHit, RESPCMT, Mux(needReplLLC, Mux(localCleanLLCVictim, SAVEDATA, UPDATEID), SAVEDATA)) }
         }
 
         is(UPDATEID) {
