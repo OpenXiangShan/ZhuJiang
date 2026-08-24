@@ -199,7 +199,7 @@ case class ZJParameters(
     hnxBankOff: Int = 12,
     cpuSpaceBits: Int = 20,
     reqEjectBufDepth: Int = 5,
-    clusterCacheSizeInB: Int = 512 * 1024,
+    clusterCacheSizeInB: Int = 2 * 1024 * 1024,
     cacheSizeInB: Int = 16 * 1024 * 1024,
     cacheWays: Int = 16,
     snoopFilterWays: Int = 16,
@@ -240,13 +240,19 @@ case class ZJParameters(
     lazy val island: Seq[Node] = ZhujiangGlobal.getIsland(nodeNidBits, nodeAidBits, nodeParams, cpuSpaceBits, requestAddrBits - ciIdBits, ciName)
     lazy val mnid              = island.filter(_.nodeType == NodeType.M).head.nodeId
 
-    private lazy val bank            = nodeParams.filter(_.hfpId == 0).count(_.nodeType == NodeType.HF)
-    private lazy val cores           = nodeParams.count(_.nodeType == NodeType.CC)
-    private lazy val originSfSizeInB = clusterCacheSizeInB * 2 * cores / bank
-    private lazy val sfSetSize       = cachelineBytes * snoopFilterWays
-    private lazy val fixedSfSets     = 1 << log2Ceil(originSfSizeInB / sfSetSize)
-    private lazy val fixedSfSizeInB  = fixedSfSets * sfSetSize
-    lazy val djParams = djParamsOpt.getOrElse(
+    private lazy val bank             = nodeParams.filter(_.hfpId == 0).count(_.nodeType == NodeType.HF)
+    private lazy val totalSfSizeInB   = clusterCacheSizeInB * 2 * nrC
+    private lazy val sfSetSize        = cachelineBytes * snoopFilterWays
+    lazy val djParams = djParamsOpt.getOrElse {
+        require(bank > 0, "ZhuJiang topology must contain at least one HNF bank")
+        require(totalSfSizeInB % bank == 0, s"SF size $totalSfSizeInB B must divide evenly across $bank HNFs")
+        val sfSizePerHnfInB = totalSfSizeInB / bank
+        val fixedSfSets     = 1 << log2Ceil(sfSizePerHnfInB / sfSetSize)
+        val fixedSfSizeInB  = fixedSfSets * sfSetSize
+        require(
+            fixedSfSizeInB == sfSizePerHnfInB,
+            s"SF size per HNF $sfSizePerHnfInB B must produce a power-of-two set count with $snoopFilterWays ways"
+        )
         DJParam(
             addressBits = requestAddrBits,
             llcSizeInB = cacheSizeInB / bank,
@@ -260,7 +266,7 @@ case class ZJParameters(
             nrReqTaskBuf = (hnxOutstanding / 4 / bank).max(2),
             nrHprTaskBuf = (hnxOutstanding / 8 / bank).max(2)
         )
-    )
+    }
 }
 
 trait HasZJParams {
