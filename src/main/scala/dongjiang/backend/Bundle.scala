@@ -15,8 +15,10 @@ import dongjiang.data._
 import zhujiang.chi.ReqOpcode._
 import dongjiang.frontend._
 import dongjiang.frontend.decode._
+import zhujiang.perf.ZJPerf
 
 class CommitTask(implicit p: Parameters) extends DJBundle with HasPackChi with HasPackDirMsg with HasAlready with HasDsIdx with HasDecList with HasPackTaskCode with HasPackCmtCode with HasQoS {
+    val perf = Option.when(ZJPerf.enabled)(new LocalHitPerfTrace)
     def isReplLLC = cmt.wriLLC & !dir.llc.hit
 }
 

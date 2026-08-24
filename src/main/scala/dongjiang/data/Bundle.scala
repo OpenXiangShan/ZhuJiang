@@ -11,6 +11,7 @@ import zhujiang.chi.DataFlit
 import dongjiang.data.CTRLSTATE._
 import dongjiang.utils.HasQoS
 import xs.utils.debug._
+import zhujiang.perf.ZJPerf
 
 trait HasDataOp { this: Bundle =>
 
@@ -53,8 +54,17 @@ trait HasDsIdx { this: DJBundle =>
 
 class PackDsIdx(implicit p: Parameters) extends DJBundle with HasDsIdx
 
+class LocalHitPerfTrace(implicit p: Parameters) extends DJBundle {
+    val valid        = Bool()
+    val demandRead   = Bool()
+    val llcHit       = Bool()
+    val ingressCycle = UInt(64.W)
+    val decodeCycle  = UInt(64.W)
+}
+
 class DataTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPackDataOp with HasDsIdx with HasDataVec with HasQoS {
     val txDat = new DataFlit
+    val perf  = Option.when(ZJPerf.enabled)(new LocalHitPerfTrace)
 }
 
 class PackDataTask(implicit p: Parameters) extends DJBundle { val task = new DataTask }

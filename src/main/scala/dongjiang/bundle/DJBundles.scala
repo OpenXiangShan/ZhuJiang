@@ -8,6 +8,7 @@ import zhujiang.chi._
 import dongjiang.frontend.decode._
 import dongjiang.frontend.decode.Decode._
 import zhujiang.chi.ReqOpcode.WriteEvictOrEvict
+import zhujiang.perf.ZJPerf
 
 object NocType {
     def rxIs(flit: Flit, t: Int): Bool = flit.tgt === t.U
@@ -125,9 +126,10 @@ trait HasDataVec extends DJBundle { this: DJBundle =>
 
 trait HasChi { this: DJBundle with HasNodeId with HasChiChannel with HasChiOp with HasChiOrderAndExpCompAck with HasChiSnpField with HasDataVec =>
 
-    val txnID   = UInt(ChiTxnIdBits.W)
-    val memAttr = new MemAttr()
-    val size    = UInt(3.W)
+    val txnID            = UInt(ChiTxnIdBits.W)
+    val perfIngressCycle = Option.when(ZJPerf.enabled)(UInt(64.W))
+    val memAttr          = new MemAttr()
+    val size             = UInt(3.W)
 
     val fwdNID   = UInt(nodeIdBits.W)
     val fwdTxnID = UInt(ChiFwdTxnIdBits.W)
