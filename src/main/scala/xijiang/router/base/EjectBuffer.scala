@@ -3,6 +3,7 @@ package xijiang.router.base
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import zhujiang.ZJModule
 import zhujiang.chi.{NodeIdBundle, RingFlit}
 
@@ -72,17 +73,17 @@ class VipTable[T <: Data](gen: T, size: Int) extends Module {
     }
 }
 
-class EjectBuffer[T <: RingFlit](gen: T, size: Int, chn: String)(implicit p: Parameters) extends ZJModule {
+class EjectBuffer[T <: RingFlit](gen: T, size: Int, channel: String)(implicit p: Parameters) extends ZJModule {
     private def getTag(flit: RingFlit): UInt = {
         val tgtAid = flit.tgt.asTypeOf(new NodeIdBundle).aid
-        if (chn == "DAT") Cat(flit.src, flit.txn, tgtAid, flit.did) else Cat(flit.src, flit.txn, tgtAid)
+        if (channel == "DAT") Cat(flit.src, flit.txn, tgtAid, flit.did) else Cat(flit.src, flit.txn, tgtAid)
     }
     require(size >= 3)
     val io = IO(new Bundle {
         val enq = Flipped(Decoupled(gen))
         val deq = Decoupled(gen)
     })
-    override val desiredName = s"EjectBuffer$chn"
+    override val desiredName = s"EjectBuffer$channel"
     private val flitTag      = getTag(io.enq.bits)
     private val oqueue       = Module(new Queue(gen, size - 1))
     private val ipipe        = Module(new Queue(gen, 1, pipe = true))
@@ -112,4 +113,27 @@ class EjectBuffer[T <: RingFlit](gen: T, size: Int, chn: String)(implicit p: Par
     ipipe.io.enq.valid := io.enq.valid & allowEnq
     ipipe.io.enq.bits  := io.enq.bits
     io.enq.ready       := empties.orR & allowEnq
+
+    ZJPerf.whenEnabled {
+        val chn       = channel.toLowerCase
+        val occupancy = size.U - empties
+        val deqStall  = io.deq.valid && !io.deq.ready
+        val vipBlock  = io.enq.valid && empties === 1.U && !allowEnq
+
+        ZJPerf.accumulate(
+            Seq(
+                (s"zj_ring_${chn}_ebuf_deq_valid", io.deq.valid),
+                (s"zj_ring_${chn}_ebuf_deq_fire", io.deq.fire),
+                (s"zj_ring_${chn}_ebuf_deq_stall", deqStall),
+                (s"zj_ring_${chn}_ebuf_vip_block", vipBlock)
+            )
+        )
+        ZJPerf.distribution(
+            s"zj_ring_${chn}_ebuf_occupancy",
+            occupancy,
+            true.B,
+            Seq(HistogramRange(0, size + 1, 1)),
+            includeMinMax = false
+        )
+    }
 }

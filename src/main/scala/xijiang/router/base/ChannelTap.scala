@@ -5,6 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import xijiang.Node
 import xs.utils.ResetRRArbiter
+import zhujiang.perf.ZJPerf
 import zhujiang.chi.{NodeIdBundle, RingFlit}
 import zhujiang.{ZJModule, ZJParametersKey}
 
@@ -87,6 +88,66 @@ class SingleChannelTap[T <: RingFlit](gen: T, channel: String)(implicit p: Param
     private val matcher = io.matchTag.asTypeOf(new NodeIdBundle)
     io.eject.valid := io.in.flit.bits.tgt.asTypeOf(new NodeIdBundle).router === matcher.router && io.in.flit.valid
     io.eject.bits  := io.in.flit.bits
+
+    ZJPerf.whenEnabled {
+        val chn             = channel.toLowerCase
+        val injectStall     = io.inject.valid && !io.inject.ready
+        val injectBlockFlit = io.inject.valid && !io.inject.ready && !emptySlot
+        val injectBlockSlot = io.inject.valid && !io.inject.ready && emptySlot && !availableSlot
+        val ejectStall      = io.eject.valid && !io.eject.ready
+        val rsvdMatch       = io.in.rsvd.valid && meetRsvdSlot
+        val waitSlotCycle   = state(waitSlotShift)
+
+        // Local Ring TopDown only.  The parent population is a cycle with either
+        // injection or ejection back-pressure at this channel tap.  Categories
+        // are deliberately one-hot and use only signals available in this module:
+        // queue/full, endpoint back-pressure, reserved/link wait, and unknown.
+        // This is not a CPU-loss or end-to-end transaction attribution counter.
+        val topdownPressure     = injectStall || ejectStall
+        val topdownQueueFull    = injectBlockFlit
+        val topdownReservedLink = !topdownQueueFull && injectBlockSlot
+        val topdownEndpoint     = !topdownQueueFull && !topdownReservedLink && ejectStall
+        val topdownClasses = VecInit(
+            Seq(
+                topdownQueueFull,
+                topdownEndpoint,
+                topdownReservedLink
+            )
+        )
+        assert(PopCount(topdownClasses) <= 1.U, "Ring TopDown owner must be one-hot")
+        assert(
+            PopCount(topdownClasses) === topdownPressure.asUInt,
+            "Ring TopDown owner must cover every pressure cycle"
+        )
+        val injectWaitCounter = RegInit(0.U(16.W))
+        val injectWaitNext = Mux(
+            io.inject.fire || !io.inject.valid,
+            0.U,
+            Mux(injectStall && !injectWaitCounter.andR, injectWaitCounter + 1.U, injectWaitCounter)
+        )
+        injectWaitCounter := injectWaitNext
+
+        ZJPerf.accumulate(
+            Seq(
+                (s"zj_ring_${chn}_rx_flit_valid", io.in.flit.valid),
+                (s"zj_ring_${chn}_tx_flit_valid", io.out.flit.valid),
+                (s"zj_ring_${chn}_inject_valid", io.inject.valid),
+                (s"zj_ring_${chn}_inject_fire", injectFire),
+                (s"zj_ring_${chn}_inject_stall", injectStall),
+                (s"zj_ring_${chn}_inject_block_flit", injectBlockFlit),
+                (s"zj_ring_${chn}_inject_block_slot", injectBlockSlot),
+                (s"zj_ring_${chn}_eject_valid", io.eject.valid),
+                (s"zj_ring_${chn}_eject_fire", ejectFire),
+                (s"zj_ring_${chn}_eject_stall", ejectStall),
+                (s"zj_ring_${chn}_rsvd_valid", io.in.rsvd.valid),
+                (s"zj_ring_${chn}_rsvd_match", rsvdMatch),
+                (s"zj_ring_${chn}_inject_reserved_cycle", state(injectRsvdShift)),
+                (s"zj_ring_${chn}_wait_slot_cycle", waitSlotCycle),
+                (s"zj_ring_${chn}_topdown_pressure_cycle", topdownPressure)
+            )
+        )
+        ZJPerf.max(s"zj_ring_${chn}_inject_wait", injectWaitNext, injectStall)
+    }
 }
 
 class ChannelTap[T <: RingFlit](
