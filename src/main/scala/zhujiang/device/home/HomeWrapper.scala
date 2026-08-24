@@ -16,6 +16,7 @@ import zhujiang.chi.FlitHelper.{connIcn, hwaConn}
 import zhujiang.chi._
 import zhujiang.utils.DoubleCounterClockGate
 import zhujiang.{ZJDftWires, ZJRawModule}
+import zhujiang.perf.HomeWrapperPerf
 
 @instantiable
 class HomeWrapper(nodes: Seq[Node], nrFriends: Int)(implicit p: Parameters) extends ZJRawModule with ImplicitClock with ImplicitReset {
@@ -153,4 +154,6 @@ class HomeWrapper(nodes: Seq[Node], nrFriends: Int)(implicit p: Parameters) exte
         }
         connIcn(dbgTx, dbgBd)
     }
+
+    HomeWrapperPerf.collect()
 }
