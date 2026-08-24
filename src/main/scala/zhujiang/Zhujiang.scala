@@ -77,6 +77,22 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
         ZhujiangGlobal.addHnf(this, devName, icnSeq.map(_.node.nodeId))
         for (j <- icnSeq.indices) {
             hfDevSeq(i).io.lans(j) <> icnSeq(j)
+            val portName = s"${devName}_p$j"
+            ZJPerf.accumulate(
+                icnSeq(j).node.ejects.filter(icnSeq(j).tx.bundleMap.contains).flatMap { chn =>
+                    val ch = icnSeq(j).tx.bundleMap(chn)
+                    Seq(
+                        (s"zj_hnf_${portName}_rx_${chn.toLowerCase()}_fire", ch.fire),
+                        (s"zj_hnf_${portName}_rx_${chn.toLowerCase()}_stall", ch.valid && !ch.ready)
+                    )
+                } ++ icnSeq(j).node.injects.filter(icnSeq(j).rx.bundleMap.contains).flatMap { chn =>
+                    val ch = icnSeq(j).rx.bundleMap(chn)
+                    Seq(
+                        (s"zj_hnf_${portName}_tx_${chn.toLowerCase()}_fire", ch.fire),
+                        (s"zj_hnf_${portName}_tx_${chn.toLowerCase()}_stall", ch.valid && !ch.ready)
+                    )
+                }
+            )
             hfDevSeq(i).io.nids(j) := icnSeq(j).node.nodeId.U
             for (k <- 0 until nrHfFrnd) {
                 val frnds = icnSeq(j).node.friends.map(_.nodeId.U(niw.W))
@@ -112,6 +128,16 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
 
     private val ccnIcnSeq    = ring.icnCcs.get
     private val ccnSocketSeq = ccnIcnSeq.map(icn => placeSocket(icn, Some(icn.node.domainId)))
+    ZJPerf.whenEnabled {
+        ccnIcnSeq.zipWithIndex.foreach { case (icn, idx) =>
+            val ccTxPressure = icn.node.injects
+                .filter(icn.rx.bundleMap.contains)
+                .map(chn => icn.rx.bundleMap(chn))
+                .map(ch => ch.valid && !ch.ready)
+                .reduce(_ || _)
+            ZJPerf.accumulate(s"zj_cc_${idx}_to_hn_topdown_pressure_cycle", ccTxPressure)
+        }
+    }
 
     val io = IO(new Bundle {
         val ci          = Input(UInt(ciIdBits.W))
@@ -134,6 +160,7 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
     io.onReset := mnIow.io.onReset.get
     ring.io_ci := io.ci
     io.intr.foreach(_ := mnIow.io.intr.get)
+    ZJPerf.collect()
 }
 
 trait NocIOHelper {
