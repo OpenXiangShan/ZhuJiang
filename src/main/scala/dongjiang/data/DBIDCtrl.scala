@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import xs.utils.queue.FastQueue
 import chisel3.experimental.BundleLiterals._
 import dongjiang.backend.UpdHnTxnID
@@ -113,6 +114,20 @@ class DBIDCtrl(implicit p: Parameters) extends DJModule {
     pool.io.enq0.bits := io.release.bits.dbidVec(0)
     pool.io.enq1.bits := io.release.bits.dbidVec(1)
     HAssert.withEn(io.release.bits.dbidVec(0) =/= io.release.bits.dbidVec(1), pool.io.enq0.valid & pool.io.enq1.valid)
+
+    private val dbidAvailableCount = pool.io.deq0.valid.asUInt +& pool.io.deq1.valid.asUInt
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_dbid_req_valid", io.req.valid),
+            ("zj_dbid_req_fire", io.req.fire),
+            ("zj_dbid_req_stall_empty", io.req.valid && !hasTwo),
+            ("zj_dbid_release_valid", io.release.valid),
+            ("zj_dbid_release_beat0", pool.io.enq0.valid),
+            ("zj_dbid_release_beat1", pool.io.enq1.valid),
+            ("zj_dbid_available_sum", dbidAvailableCount)
+        )
+    )
+    HomeWrapperPerf.max("zj_dbid_available_max", dbidAvailableCount, true.B)
 
     HardwareAssertion.placePipe(1)
 }

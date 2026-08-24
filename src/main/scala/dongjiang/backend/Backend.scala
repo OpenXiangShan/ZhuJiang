@@ -10,6 +10,7 @@ import dongjiang.utils._
 import dongjiang.bundle._
 import xijiang.Node
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import xs.utils.queue._
 import dongjiang.frontend._
 import dongjiang.frontend.decode._
@@ -156,6 +157,34 @@ class Backend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
 
     wDirQ.io.enq.bits.llc.bits.addr := io.getAddrVec(2).result.addr
     wDirQ.io.enq.bits.sf.bits.addr  := io.getAddrVec(2).result.addr
+
+    private val cmtTaskPerfEvents = io.cmtTaskVec.zipWithIndex.flatMap { case (task, i) =>
+        Seq(
+            (s"zj_backend_cmt_task_valid_$i", task.valid)
+        )
+    }
+    HomeWrapperPerf.accumulate(
+        cmtTaskPerfEvents ++ Seq(
+            ("zj_backend_tx_req_fire", io.txReq.fire),
+            ("zj_backend_tx_req_stall", io.txReq.valid && !io.txReq.ready),
+            ("zj_backend_tx_snp_fire", io.txSnp.fire),
+            ("zj_backend_tx_snp_stall", io.txSnp.valid && !io.txSnp.ready),
+            ("zj_backend_tx_rsp_fire", io.txRsp.fire),
+            ("zj_backend_tx_rsp_stall", io.txRsp.valid && !io.txRsp.ready),
+            ("zj_backend_rx_rsp_fire", io.rxRsp.fire),
+            ("zj_backend_rx_dat_valid", io.rxDat.valid),
+            ("zj_backend_write_dir_fire", io.writeDir.fire),
+            ("zj_backend_write_dir_stall", io.writeDir.valid && !io.writeDir.ready),
+            ("zj_backend_req_db_fire", io.reqDB.fire),
+            ("zj_backend_req_db_stall", io.reqDB.valid && !io.reqDB.ready),
+            ("zj_backend_data_task_fire", io.dataTask.fire),
+            ("zj_backend_data_task_stall", io.dataTask.valid && !io.dataTask.ready),
+            ("zj_backend_clean_db_fire", io.cleanDB.fire),
+            ("zj_backend_clean_db_stall", io.cleanDB.valid && !io.cleanDB.ready),
+            ("zj_backend_fast_resp_fire", io.fastResp.fire),
+            ("zj_backend_fast_resp_stall", io.fastResp.valid && !io.fastResp.ready)
+        )
+    )
 
     HardwareAssertion.placePipe(2)
 }

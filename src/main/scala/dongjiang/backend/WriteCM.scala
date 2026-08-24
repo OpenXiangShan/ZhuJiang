@@ -107,6 +107,7 @@ class WriteEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.bits.txDat.SrcID  := reg.task.chi.getNoC
     io.dataTask.bits.txDat.TgtID  := reg.task.chi.nodeId
     io.dataTask.bits.qos          := reg.task.qos
+    io.dataTask.bits.perf         := 0.U.asTypeOf(new LocalHitPerfTrace)
 
     io.resp.valid := reg.isRespCmt
 

@@ -17,6 +17,7 @@ import dongjiang.frontend._
 import dongjiang.frontend.decode._
 
 class CommitTask(implicit p: Parameters) extends DJBundle with HasPackChi with HasPackDirMsg with HasAlready with HasDsIdx with HasDecList with HasPackTaskCode with HasPackCmtCode with HasQoS {
+    val perf = new LocalHitPerfTrace
     def isReplLLC = cmt.wriLLC & !dir.llc.hit
 }
 
@@ -36,13 +37,61 @@ class CMResp(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPa
 }
 
 class ReplTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPackDirMsg with HasQoS {
-    val wriSF  = Bool()
-    val wriLLC = Bool()
-    val directAllocSF = Bool()
+    val wriSF             = Bool()
+    val wriLLC            = Bool()
+    val sfWriSRC          = Bool()
+    val sfWriSNP          = Bool()
+    val reqOpcode         = UInt(ReqOpcode.width.W)
+    val reqAllocate       = Bool()
+    val sfSrcHit          = Bool()
+    val sfOthHit          = Bool()
+    val effectiveLLCState = UInt(ChiState.width.W)
+    val directAllocSF     = Bool()
     def isDirectAllocSF = wriSF & !dir.sf.hit & directAllocSF
     def isReplSF = wriSF & !dir.sf.hit & !directAllocSF
     def isReplLLC = wriLLC & !dir.llc.hit
     def isReplDIR = isReplSF | isReplLLC
+}
+
+class SFWritePerf(implicit p: Parameters) extends DJBundle {
+    val commit            = Bool()
+    val sfHit             = Bool()
+    val sfMiss            = Bool()
+    val srcHit            = Bool()
+    val othHit            = Bool()
+    val noSrcOrOthHit     = Bool()
+    val allocate          = Bool()
+    val noAllocate        = Bool()
+    val readNsd           = Bool()
+    val readUnique        = Bool()
+    val writeBackFull     = Bool()
+    val writeEvictOrEvict = Bool()
+    val otherOpcode       = Bool()
+    val llcI              = Bool()
+    val llcSC             = Bool()
+    val llcUC             = Bool()
+    val llcUD             = Bool()
+    val allocCommit       = Bool()
+}
+
+class SFReplacementPerf(implicit p: Parameters) extends DJBundle {
+    val event             = Bool()
+    val fromSrc           = Bool()
+    val fromSnp           = Bool()
+    val allocate          = Bool()
+    val noAllocate        = Bool()
+    val srcHit            = Bool()
+    val othHit            = Bool()
+    val noSrcOrOthHit     = Bool()
+    val readNsd           = Bool()
+    val readUnique        = Bool()
+    val writeBackFull     = Bool()
+    val writeEvictOrEvict = Bool()
+    val otherOpcode       = Bool()
+    val llcI              = Bool()
+    val llcSC             = Bool()
+    val llcUC             = Bool()
+    val llcUD             = Bool()
 }
 
 class UpdHnTxnID(implicit p: Parameters) extends DJBundle {

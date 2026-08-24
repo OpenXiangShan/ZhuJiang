@@ -14,6 +14,7 @@ import dongjiang.utils._
 import org.chipsalliance.cde.config._
 import xs.utils.arb.VipArbiter
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import zhujiang.chi.ReqOpcode._
 import zhujiang.chi._
 
@@ -105,10 +106,12 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
             val sf  = Flipped(Valid(new DirEntry("sf") with HasHnTxnID))
         }
 
-        val reqDB      = Decoupled(new HnTxnID with HasDataVec with HasQoS)
-        val updHnTxnID = Decoupled(new UpdHnTxnID)
-        val dataTask   = Decoupled(new DataTask)
-        val dataResp   = Flipped(Valid(new HnTxnID))
+        val reqDB               = Decoupled(new HnTxnID with HasDataVec with HasQoS)
+        val updHnTxnID          = Decoupled(new UpdHnTxnID)
+        val dataTask            = Decoupled(new DataTask)
+        val dataResp            = Flipped(Valid(new HnTxnID))
+        val sfReplWritePerf     = Output(new SFReplacementPerf)
+        val sfReplSnpUniquePerf = Output(new SFReplacementPerf)
 
         val dbg = Valid(new Bundle {
             val task = new PackHnIdx with HasHnTxnID
@@ -131,13 +134,20 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
 
     io.alloc.ready := reg.isFree
     when(io.alloc.fire) {
-        alloc.dir          := io.alloc.bits.dir
-        alloc.wriSF        := io.alloc.bits.wriSF
-        alloc.wriLLC       := io.alloc.bits.wriLLC
-        alloc.directAllocSF := io.alloc.bits.directAllocSF
-        alloc.hnTxnID      := io.alloc.bits.hnTxnID
-        alloc.repl.hnTxnID := io.alloc.bits.hnTxnID
-        alloc.qos          := io.alloc.bits.qos
+        alloc.dir               := io.alloc.bits.dir
+        alloc.wriSF             := io.alloc.bits.wriSF
+        alloc.wriLLC            := io.alloc.bits.wriLLC
+        alloc.sfWriSRC          := io.alloc.bits.sfWriSRC
+        alloc.sfWriSNP          := io.alloc.bits.sfWriSNP
+        alloc.reqOpcode         := io.alloc.bits.reqOpcode
+        alloc.reqAllocate       := io.alloc.bits.reqAllocate
+        alloc.sfSrcHit          := io.alloc.bits.sfSrcHit
+        alloc.sfOthHit          := io.alloc.bits.sfOthHit
+        alloc.effectiveLLCState := io.alloc.bits.effectiveLLCState
+        alloc.directAllocSF     := io.alloc.bits.directAllocSF
+        alloc.hnTxnID           := io.alloc.bits.hnTxnID
+        alloc.repl.hnTxnID      := io.alloc.bits.hnTxnID
+        alloc.qos               := io.alloc.bits.qos
     }
 
     io.reqPoS.valid        := reg.isReqPoS
@@ -267,6 +277,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.bits.dataVec     := DataVec.Full
     io.dataTask.bits.ds          := reg.ds
     io.dataTask.bits.qos         := reg.qos
+    io.dataTask.bits.perf         := 0.U.asTypeOf(new LocalHitPerfTrace)
 
     io.cleanPoS.valid        := reg.isCleanPoS
     io.cleanPoS.bits.hnIdx   := Mux(reg.isCleanPosT, reg.getHnIdx, reg.repl.getHnIdx)
@@ -389,6 +400,78 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         reg.state := next.state
     }
 
+    private def setSFReplacementPerf(perf: SFReplacementPerf, event: Bool): Unit = {
+        perf.event             := event
+        perf.fromSrc           := event && reg.sfWriSRC
+        perf.fromSnp           := event && reg.sfWriSNP
+        perf.allocate          := event && reg.reqAllocate
+        perf.noAllocate        := event && !reg.reqAllocate
+        perf.srcHit            := event && reg.sfSrcHit
+        perf.othHit            := event && reg.sfOthHit
+        perf.noSrcOrOthHit     := event && !reg.sfSrcHit && !reg.sfOthHit
+        perf.readNsd           := event && reg.reqOpcode === ReadNotSharedDirty
+        perf.readUnique        := event && reg.reqOpcode === ReadUnique
+        perf.writeBackFull     := event && reg.reqOpcode === WriteBackFull
+        perf.writeEvictOrEvict := event && reg.reqOpcode === WriteEvictOrEvict
+        perf.otherOpcode       := event && reg.reqOpcode =/= ReadNotSharedDirty && reg.reqOpcode =/= ReadUnique && reg.reqOpcode =/= WriteBackFull && reg.reqOpcode =/= WriteEvictOrEvict
+        perf.llcI              := event && reg.effectiveLLCState === ChiState.I
+        perf.llcSC             := event && reg.effectiveLLCState === ChiState.SC
+        perf.llcUC             := event && reg.effectiveLLCState === ChiState.UC
+        perf.llcUD             := event && reg.effectiveLLCState === ChiState.UD
+    }
+    setSFReplacementPerf(io.sfReplWritePerf, io.writeDir.fire && reg.isReplSF)
+    setSFReplacementPerf(io.sfReplSnpUniquePerf, io.cmTaskVec(CMID.SNP).fire && reg.isReplSF)
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_repl_entry_valid", reg.isValid),
+            ("zj_repl_state_req_pos", reg.isReqPoS),
+            ("zj_repl_state_wait_pos", reg.isWaitPoS),
+            ("zj_repl_state_wri_dir", reg.isWriDir),
+            ("zj_repl_state_wait_dir", reg.isWaitDir),
+            ("zj_repl_state_update_id", reg.isUpdHnTxnID),
+            ("zj_repl_state_resp_cmt", reg.isRespCmt),
+            ("zj_repl_state_req_db", reg.isReqDB),
+            ("zj_repl_state_write", reg.isWrite),
+            ("zj_repl_state_snoop", reg.isSnoop),
+            ("zj_repl_state_wait_wri", reg.isWaitWrite),
+            ("zj_repl_state_wait_snp", reg.isWaitSnp),
+            ("zj_repl_state_copy_id", reg.isCopyID),
+            ("zj_repl_state_save_data", reg.isSaveData),
+            ("zj_repl_state_wait_resp", reg.isWaitResp),
+            ("zj_repl_state_clean_pos_t", reg.isCleanPosT),
+            ("zj_repl_state_clean_pos_r", reg.isCleanPosR),
+            ("zj_repl_alloc_fire", io.alloc.fire),
+            ("zj_repl_req_pos_valid", io.reqPoS.valid),
+            ("zj_repl_req_pos_fire", io.reqPoS.fire),
+            ("zj_repl_req_pos_stall", io.reqPoS.valid && !io.reqPoS.ready),
+            ("zj_repl_pos_resp_hit", posRespHit),
+            ("zj_repl_write_dir_valid", io.writeDir.valid),
+            ("zj_repl_write_dir_fire", io.writeDir.fire),
+            ("zj_repl_write_dir_stall", io.writeDir.valid && !io.writeDir.ready),
+            ("zj_repl_dir_resp_hit", dirRespHit),
+            ("zj_repl_dir_resp_sf_hit", sfRespHit),
+            ("zj_repl_dir_resp_llc_hit", llcRespHit),
+            ("zj_repl_upd_hn_txnid_valid", io.updHnTxnID.valid),
+            ("zj_repl_upd_hn_txnid_fire", io.updHnTxnID.fire),
+            ("zj_repl_resp_valid", io.resp.valid),
+            ("zj_repl_resp_fire", io.resp.fire),
+            ("zj_repl_resp_stall", io.resp.valid && !io.resp.ready),
+            ("zj_repl_req_db_valid", io.reqDB.valid),
+            ("zj_repl_req_db_fire", io.reqDB.fire),
+            ("zj_repl_req_db_stall", io.reqDB.valid && !io.reqDB.ready),
+            ("zj_repl_data_task_valid", io.dataTask.valid),
+            ("zj_repl_data_task_fire", io.dataTask.fire),
+            ("zj_repl_data_task_stall", io.dataTask.valid && !io.dataTask.ready),
+            ("zj_repl_clean_pos_valid", io.cleanPoS.valid),
+            ("zj_repl_clean_pos_fire", io.cleanPoS.fire),
+            ("zj_repl_clean_pos_stall", io.cleanPoS.valid && !io.cleanPoS.ready),
+            ("zj_repl_cm_wri_fire", io.cmTaskVec(CMID.WRI).fire),
+            ("zj_repl_cm_snp_fire", io.cmTaskVec(CMID.SNP).fire),
+            ("zj_repl_cm_resp_hit", cmRespHit),
+            ("zj_repl_data_resp_hit", dataRespHit)
+        )
+    )
+
     HAssert.checkTimeout(reg.isFree, TIMEOUT_REPLACE, cf"TIMEOUT: Replace State[${reg.state}]")
 }
 
@@ -426,6 +509,45 @@ class ReplaceCM(implicit p: Parameters) extends DJModule {
     })
 
     val entries = Seq.fill(nrReplaceCM) { Module(new ReplaceEntry()) }
+
+    private def anySFReplacement(perfs: Seq[SFReplacementPerf])(select: SFReplacementPerf => Bool): Bool =
+        perfs.map(select).reduce(_ | _)
+
+    private def sfReplacementEvents(prefix: String, perfs: Seq[SFReplacementPerf]): Seq[(String, Bool)] =
+        Seq(
+            (prefix, anySFReplacement(perfs)(_.event)),
+            (s"${prefix}_from_src", anySFReplacement(perfs)(_.fromSrc)),
+            (s"${prefix}_from_snp", anySFReplacement(perfs)(_.fromSnp)),
+            (s"${prefix}_allocate", anySFReplacement(perfs)(_.allocate)),
+            (s"${prefix}_no_allocate", anySFReplacement(perfs)(_.noAllocate)),
+            (s"${prefix}_src_hit", anySFReplacement(perfs)(_.srcHit)),
+            (s"${prefix}_oth_hit", anySFReplacement(perfs)(_.othHit)),
+            (s"${prefix}_no_src_or_oth_hit", anySFReplacement(perfs)(_.noSrcOrOthHit)),
+            (s"${prefix}_readnsd", anySFReplacement(perfs)(_.readNsd)),
+            (s"${prefix}_readunique", anySFReplacement(perfs)(_.readUnique)),
+            (s"${prefix}_writebackfull", anySFReplacement(perfs)(_.writeBackFull)),
+            (s"${prefix}_writeevictorevict", anySFReplacement(perfs)(_.writeEvictOrEvict)),
+            (s"${prefix}_other_opcode", anySFReplacement(perfs)(_.otherOpcode)),
+            (s"${prefix}_llc_i", anySFReplacement(perfs)(_.llcI)),
+            (s"${prefix}_llc_sc", anySFReplacement(perfs)(_.llcSC)),
+            (s"${prefix}_llc_uc", anySFReplacement(perfs)(_.llcUC)),
+            (s"${prefix}_llc_ud", anySFReplacement(perfs)(_.llcUD))
+        )
+
+    private val sfReplWritePerfs     = entries.map(_.io.sfReplWritePerf)
+    private val sfReplSnpUniquePerfs = entries.map(_.io.sfReplSnpUniquePerf)
+    HAssert(PopCount(VecInit(sfReplWritePerfs.map(_.event))) <= 1.U)
+    HAssert(PopCount(VecInit(sfReplSnpUniquePerfs.map(_.event))) <= 1.U)
+    HomeWrapperPerf.accumulate(
+        sfReplacementEvents("zj_sf_repl_write_commit", sfReplWritePerfs) ++
+            sfReplacementEvents("zj_sf_repl_snpunique_fire", sfReplSnpUniquePerfs) ++
+            Seq(
+                (
+                    "zj_sf_direct_alloc_write_fire",
+                    io.writeDir.fire && io.writeDir.bits.sf.valid && io.writeDir.bits.sf.bits.directAlloc
+                )
+            )
+    )
 
     Alloc(entries.map(_.io.alloc), io.task)
 
