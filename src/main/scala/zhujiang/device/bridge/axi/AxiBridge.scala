@@ -8,7 +8,7 @@ import xijiang.{Node, NodeType}
 import xijiang.router.base.DeviceIcnBundle
 import xs.utils.arb.ConditionVipArbiter
 import xs.utils.mbist.MbistPipeline
-import xs.utils.perf.XSPerfAccumulate
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import xs.utils.PickOneLow
 import zhujiang.ZJModule
 import zhujiang.axi._
@@ -92,6 +92,7 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
     private val shouldBeWaited    = cms.map(cm => cm.io.info.valid && !cm.io.wakeupOut.valid && cm.io.info.bits.isSnooped)
     private val cmAddrSeq         = cms.map(cm => cm.io.info.bits.addr)
     private val req               = icn.rx.req.get.bits.asTypeOf(new ReqFlit(true))
+    private val isWriteReq        = req.Opcode =/= ReqOpcode.ReadNoSnp
     private val reqTagMatchVec    = VecInit(shouldBeWaited.zip(cmAddrSeq).map(elm => elm._1 && compareTag(elm._2, req.Addr)))
     private val reqTagMatchVecReg = RegEnable(reqTagMatchVec, icn.rx.req.get.fire)
     private val waitNum           = PopCount(reqTagMatchVecReg)
@@ -146,13 +147,50 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
 
     connIcn(icn.tx.data.get, readDataPipe.io.deq)
 
-    XSPerfAccumulate(
-        Seq(
-            ("read_req_cnt", icn.rx.req.get.fire && req.Opcode === ReqOpcode.ReadNoSnp),
-            ("write_req_cnt", icn.rx.req.get.fire && (req.Opcode === ReqOpcode.WriteNoSnpPtl || req.Opcode === ReqOpcode.WriteNoSnpFull)),
-            ("total_mem_req_cnt", icn.rx.req.get.fire),
-            ("total_req_retention_cnt", cms.map(_.io.info.valid).reduce(_ || _))
+    ZJPerf.whenEnabled {
+        val busyCmCount       = PopCount(busyEntries)
+        val cycleTick         = RegInit(0.U(32.W))
+        val arIssueTickVec    = Reg(Vec(node.outstanding, UInt(32.W)))
+        val awIssueTickVec    = Reg(Vec(node.outstanding, UInt(32.W)))
+        val readResponseFire  = axi.r.fire && axi.r.bits._last
+        val writeResponseFire = axi.b.fire
+        val arIssueOnResponse = axi.ar.fire && axi.ar.bits.id === axi.r.bits.id
+        val awIssueOnResponse = axi.aw.fire && axi.aw.bits.id === axi.b.bits.id
+        val arToLastRLatency  = cycleTick - Mux(arIssueOnResponse, cycleTick, arIssueTickVec(axi.r.bits.id))
+        val awToBLatency      = cycleTick - Mux(awIssueOnResponse, cycleTick, awIssueTickVec(axi.b.bits.id))
+        cycleTick := cycleTick + 1.U
+        when(axi.ar.fire) {
+            arIssueTickVec(axi.ar.bits.id) := cycleTick
+        }
+        when(axi.aw.fire) {
+            awIssueTickVec(axi.aw.bits.id) := cycleTick
+        }
+
+        ZJPerf.accumulate(
+            Seq(
+                ("read_req_cnt", icn.rx.req.get.fire && !isWriteReq),
+                ("write_req_cnt", icn.rx.req.get.fire && isWriteReq),
+                ("zj_axi_rx_req_stall", icn.rx.req.get.valid && !icn.rx.req.get.ready),
+                ("zj_axi_aw_fire", axi.aw.fire),
+                ("zj_axi_aw_stall", axi.aw.valid && !axi.aw.ready),
+                ("zj_axi_w_fire", axi.w.fire),
+                ("zj_axi_w_stall", axi.w.valid && !axi.w.ready),
+                ("zj_axi_ar_fire", axi.ar.fire),
+                ("zj_axi_ar_stall", axi.ar.valid && !axi.ar.ready),
+                ("zj_axi_r_fire", axi.r.fire),
+                ("zj_axi_r_stall", axi.r.valid && !axi.r.ready),
+                ("zj_axi_b_fire", axi.b.fire),
+                ("zj_axi_b_stall", axi.b.valid && !axi.b.ready)
+            )
         )
-    )
+        ZJPerf.distribution(
+            "zj_axi_busy_cm",
+            busyCmCount,
+            true.B,
+            Seq(HistogramRange(0, node.outstanding + 1, 1))
+        )
+        ZJPerf.distribution("zj_axi_ar_to_last_r", arToLastRLatency, readResponseFire)
+        ZJPerf.distribution("zj_axi_aw_to_b", awToBLatency, writeResponseFire)
+    }
     MbistPipeline.PlaceMbistPipeline(1, "MbistPipelineSn", hasMbist)
 }
