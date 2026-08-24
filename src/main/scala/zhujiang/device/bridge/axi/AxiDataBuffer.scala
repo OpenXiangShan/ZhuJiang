@@ -9,6 +9,7 @@ import xs.utils.{CircularQueuePtr, HasCircularQueuePtrHelper}
 import zhujiang.axi.{AxiParams, WFlit}
 import zhujiang.{ZJBundle, ZJModule}
 import zhujiang.chi.{DatOpcode, DataFlit}
+import zhujiang.perf.ZhuJiangPerf
 
 class AxiDataBufferCtrlEntry(bufferSize: Int)(implicit p: Parameters) extends ZJBundle {
     val buf          = Vec(512 / dw, UInt(log2Ceil(bufferSize).W))
@@ -251,4 +252,19 @@ class AxiDataBuffer(axiParams: AxiParams, ctrlSize: Int, bufferSize: Int)(implic
 
     io.toCmDat.valid := rxDatValidReg && (icnSelCtrlDelay.recvCnt === (icnSelCtrlDelay.recvMax + 1.U) || rxDatBitsReg.Opcode === DatOpcode.WriteDataCancel)
     io.toCmDat.bits  := rxDatBitsReg
+
+    // Control-entry occupancy is local to this data buffer instance.
+    private val ctrlOccupancy = PopCount(ctrlValidVec)
+    ZhuJiangPerf.accumulate(
+        Seq(
+            ("zj_axi_databuf_alloc_fire", freelist.io.req.fire),
+            ("zj_axi_databuf_release_valid", freelist.io.release.valid),
+            ("zj_axi_databuf_cancel_valid", freelist.io.cancel.valid),
+            ("zj_axi_databuf_alloc_stall", io.alloc.valid && !io.alloc.ready),
+            ("zj_axi_databuf_occupancy_sum", ctrlOccupancy),
+            ("zj_axi_databuf_full_cycle", ctrlOccupancy === ctrlSize.U),
+            ("zj_axi_databuf_empty_cycle", ctrlOccupancy === 0.U)
+        )
+    )
+    ZhuJiangPerf.max("zj_axi_databuf_occupancy_max", ctrlOccupancy, true.B)
 }

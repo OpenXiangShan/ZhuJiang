@@ -58,13 +58,16 @@ package object axi {
         def wakeup: Bool = d.wresp && d.rdata
     }
 
-    class AxiCtrlInfo(implicit p: Parameters) extends IcnIoDevCtrlInfoCommon(ioDataBits = 0, withData = false, mem = true)
+    class AxiCtrlInfo(implicit p: Parameters) extends IcnIoDevCtrlInfoCommon(ioDataBits = 0, withData = false, mem = true) {
+        val isWrite = Bool()
+    }
 
     class AxiRsEntry(implicit p: Parameters) extends IcnIoDevRsEntryCommon[AxiBridgeCtrlOpVec, AxiCtrlInfo] {
         val state = new AxiBridgeCtrlOpVec
         val info  = new AxiCtrlInfo
         override def enq(req: ReqFlit, valid: Bool): Unit = {
             super.enq(req, valid)
+            info.isWrite := req.Opcode =/= ReqOpcode.ReadNoSnp
             state.bufferAllocated := req.Opcode === ReqOpcode.ReadNoSnp
         }
     }
