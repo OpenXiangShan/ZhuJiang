@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import zhujiang.chi.ReqOpcode._
 import zhujiang.chi.RspOpcode._
 import zhujiang.chi.SnpOpcode._
@@ -92,6 +93,26 @@ class Block(implicit p: Parameters) extends DJModule {
         Seq(
             sReceiptReg_s1 -> ReadReceipt,
             sDBIDReg_s1    -> DBIDResp
+        )
+    )
+
+    private val validBlockPos  = validReg_s1 && block_s1.pos
+    private val validBlockDir  = validReg_s1 && block_s1.dir
+    private val validBlockResp = validReg_s1 && block_s1.resp
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_hn_block_valid", validReg_s1),
+            ("zj_hn_block_pos", validBlockPos),
+            ("zj_hn_block_dir", validBlockDir),
+            ("zj_hn_block_resp", validBlockResp),
+            ("zj_hn_block_retry", io.retry_s1),
+            ("zj_hn_task_s1_valid", io.task_s1.valid),
+            ("zj_hn_read_dir_fire", io.readDir_s1.fire),
+            ("zj_hn_read_dir_stall", io.readDir_s1.valid && !io.readDir_s1.ready),
+            ("zj_hn_req_db_fire", io.reqDB_s1.fire),
+            ("zj_hn_req_db_stall", io.reqDB_s1.valid && !io.reqDB_s1.ready),
+            ("zj_hn_fast_resp_fire", io.fastResp_s1.fire),
+            ("zj_hn_fast_resp_stall", io.fastResp_s1.valid && !io.fastResp_s1.ready)
         )
     )
 

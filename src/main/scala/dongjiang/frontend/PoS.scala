@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.HomeWrapperPerf
 import chisel3.experimental.BundleLiterals._
 
 class PosState(implicit p: Parameters) extends DJBundle {
@@ -237,6 +238,35 @@ class PosSet(implicit p: Parameters) extends DJModule {
     HAssert(PopCount(entries.map(_.io.wakeup.valid)) <= 1.U)
     HAssert.withEn(!VecInit(esVec.map(es => es.valid & es.tagVal & es.addr === allocReg_s1.bits.addr)).asUInt.orR, allocReg_s1.valid)
     HAssert.withEn(!VecInit(esVec.map(es => es.valid & es.tagVal & es.addr === io.updTag.bits.addr)).asUInt.orR, io.updTag.valid & io.updTag.bits.addrVal)
+
+    private val usedWayCount = PopCount(esVec.map(_.valid))
+    private val blockNoFree  = io.alloc_s0.valid && !hasMatTag && !hasFree_s0
+    private val blockMatTag = io.alloc_s0.valid && hasMatTag && (
+        io.alloc_s0.bits.isReq || (io.alloc_s0.bits.isSnp && !canNest_s0)
+    )
+    private val blockMatchS1 = io.alloc_s0.valid && matchReqS1_s0
+    private val blockLock    = io.alloc_s0.valid && lockReg
+    private val blockReqPoS  = io.alloc_s0.valid && io.reqPoS.valid
+    private val reqPoSBlock  = io.reqPoS.valid && (!freeVec(replSelWay) || lockReg)
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_pos_set_alloc_valid", io.alloc_s0.valid),
+            ("zj_pos_set_alloc_fire", allocReg_s1.valid && !io.retry_s1),
+            ("zj_pos_set_alloc_retry", allocReg_s1.valid && io.retry_s1),
+            ("zj_pos_set_block", io.alloc_s0.valid && block_s0),
+            ("zj_pos_set_block_no_free", blockNoFree),
+            ("zj_pos_set_block_mat_tag", blockMatTag),
+            ("zj_pos_set_block_match_s1", blockMatchS1),
+            ("zj_pos_set_block_lock", blockLock),
+            ("zj_pos_set_block_req_pos", blockReqPoS),
+            ("zj_pos_set_sleep", io.sleep_s1),
+            ("zj_pos_set_req_pos_fire", reqPosFire),
+            ("zj_pos_set_req_pos_block", reqPoSBlock),
+            ("zj_pos_set_lock_cycle", lockReg),
+            ("zj_pos_set_used_way_sum", usedWayCount)
+        )
+    )
+    HomeWrapperPerf.max("zj_pos_set_used_way_max", usedWayCount, true.B)
 }
 
 class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
@@ -309,6 +339,20 @@ class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
     dontTouch(addrVec2)
 
     io.working := Cat(sets.flatMap(_.io.stateVec.map(_.valid))).orR
+
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_pos_table_alloc_valid", io.alloc_s0.valid),
+            ("zj_pos_table_block", io.block_s1),
+            ("zj_pos_table_sleep", io.sleep_s1),
+            ("zj_pos_table_wakeup", io.wakeup.valid),
+            ("zj_pos_table_clean", io.clean.valid),
+            ("zj_pos_table_upd_tag", io.updTag.valid),
+            ("zj_pos_table_occupancy_sum", io.alrUsePoS),
+            ("zj_pos_table_working_cycle", io.alrUsePoS.orR)
+        )
+    )
+    HomeWrapperPerf.max("zj_pos_table_occupancy_max", io.alrUsePoS, true.B)
 
     HAssert.placePipe(1)
 }

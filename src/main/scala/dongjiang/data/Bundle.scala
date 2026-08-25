@@ -53,8 +53,32 @@ trait HasDsIdx { this: DJBundle =>
 
 class PackDsIdx(implicit p: Parameters) extends DJBundle with HasDsIdx
 
+class LocalHitPerfTrace(implicit p: Parameters) extends DJBundle {
+    val valid        = Bool()
+    val demandRead   = Bool()
+    val llcHit       = Bool()
+    val ingressCycle = UInt(64.W)
+    val decodeCycle  = UInt(64.W)
+}
+
+class LlcReturnPerf(implicit p: Parameters) extends DJBundle {
+    val valid   = Bool()
+    val llcHit  = Bool()
+    val latency = UInt(64.W)
+}
+
+class LocalHitLatencyPerf(implicit p: Parameters) extends DJBundle {
+    val decodeToDataTask = Valid(UInt(64.W))
+    val dataTaskToDsReq  = Valid(UInt(64.W))
+    val dsReqToDsResp    = Valid(UInt(64.W))
+    val dsRespToTxDat    = Valid(UInt(64.W))
+    val decodeToTxDat    = Valid(UInt(64.W))
+    val ingressToTxDat   = Valid(UInt(64.W))
+}
+
 class DataTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with HasPackDataOp with HasDsIdx with HasDataVec with HasQoS {
     val txDat = new DataFlit
+    val perf  = new LocalHitPerfTrace
 }
 
 class PackDataTask(implicit p: Parameters) extends DJBundle { val task = new DataTask }

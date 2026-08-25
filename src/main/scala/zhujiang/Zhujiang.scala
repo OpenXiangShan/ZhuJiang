@@ -8,6 +8,7 @@ import xijiang.{NodeType, Ring}
 import xs.utils.debug.HardwareAssertionKey
 import xs.utils.dft.{BaseTestBundle, PowerDomainTestBundle}
 import xs.utils.mbist.{MbistInterface, MbistPipeline}
+import zhujiang.perf.ZhuJiangPerf
 import xs.utils.sram.{SramBroadcastBundle, SramCtrlBundle, SramHelper}
 import xs.utils.{DFTResetSignals, ResetGen}
 import zhujiang.axi.{AxiBuffer, AxiBundle, ExtAxiBundle}
@@ -76,6 +77,22 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
         ZhujiangGlobal.addHnf(this, devName, icnSeq.map(_.node.nodeId))
         for (j <- icnSeq.indices) {
             hfDevSeq(i).io.lans(j) <> icnSeq(j)
+            val portName = s"${devName}_p$j"
+            val rxPerf = icnSeq(j).tx.bundleMap.toSeq.flatMap({ case (chn, ch) =>
+                Seq(
+                    (s"zj_hnf_${portName}_rx_${chn.toLowerCase()}_valid", ch.valid),
+                    (s"zj_hnf_${portName}_rx_${chn.toLowerCase()}_fire", ch.fire),
+                    (s"zj_hnf_${portName}_rx_${chn.toLowerCase()}_stall", ch.valid && !ch.ready)
+                )
+            })
+            val txPerf = icnSeq(j).rx.bundleMap.toSeq.flatMap({ case (chn, ch) =>
+                Seq(
+                    (s"zj_hnf_${portName}_tx_${chn.toLowerCase()}_valid", ch.valid),
+                    (s"zj_hnf_${portName}_tx_${chn.toLowerCase()}_fire", ch.fire),
+                    (s"zj_hnf_${portName}_tx_${chn.toLowerCase()}_stall", ch.valid && !ch.ready)
+                )
+            })
+            ZhuJiangPerf.accumulate(rxPerf ++ txPerf)
             hfDevSeq(i).io.nids(j) := icnSeq(j).node.nodeId.U
             for (k <- 0 until nrHfFrnd) {
                 val frnds = icnSeq(j).node.friends.map(_.nodeId.U(niw.W))
@@ -110,6 +127,10 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
 
     private val ccnIcnSeq    = ring.icnCcs.get
     private val ccnSocketSeq = ccnIcnSeq.map(icn => placeSocket(icn, Some(icn.node.domainId)))
+    ccnIcnSeq.zipWithIndex.foreach { case (icn, idx) =>
+        val ccTxPressure = icn.rx.bundleMap.values.map(ch => ch.valid && !ch.ready).reduce(_ || _)
+        ZhuJiangPerf.accumulate(s"zj_cc_${idx}_to_hn_topdown_pressure_cycle", ccTxPressure)
+    }
 
     val io = IO(new Bundle {
         val ci          = Input(UInt(ciIdBits.W))
@@ -132,6 +153,7 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
     io.onReset := mnIow.io.onReset.get
     ring.io_ci := io.ci
     io.intr.foreach(_ := mnIow.io.intr.get)
+    ZhuJiangPerf.collect()
 }
 
 trait NocIOHelper {

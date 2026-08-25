@@ -126,6 +126,7 @@ trait HasDataVec extends DJBundle { this: DJBundle =>
 trait HasChi { this: DJBundle with HasNodeId with HasChiChannel with HasChiOp with HasChiOrderAndExpCompAck with HasChiSnpField with HasDataVec =>
 
     val txnID   = UInt(ChiTxnIdBits.W)
+    val perfIngressCycle = UInt(64.W)
     val memAttr = new MemAttr()
     val size    = UInt(3.W)
 

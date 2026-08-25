@@ -9,6 +9,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug.{HAssert, HardwareAssertion}
+import zhujiang.perf.HomeWrapperPerf
 import xs.utils.sram.{DualPortSramTemplate, SinglePortSramTemplate}
 import freechips.rocketchip.util.ReplacementPolicy
 import xs.utils.mbist.MbistPipeline
@@ -59,7 +60,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
         val config  = Input(new DJConfigIO())
         val dirBank = Input(UInt(dirBankBits.W))
         val read    = Flipped(Decoupled(new Addr(dirType) with HasPackHnIdx))
-        val write   = Flipped(Decoupled(new DirEntry(dirType) with HasPackHnIdx))
+        val write   = Flipped(Decoupled(new DirEntry(dirType) with HasPackHnIdx with HasDirectAlloc))
         val resp    = Valid(new DirEntry(dirType) with HasHnTxnID { val toRepl = Bool() })
         val unlock  = Flipped(Valid(new PackHnIdx))
     })
@@ -121,17 +122,33 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     dontTouch(tagArray.io)
     dontTouch(replArray.io)
 
+    class OwnerWayEntry extends DJBundle {
+        val valid = Bool()
+        val set   = UInt(param.setBits.W)
+        val way   = UInt(param.wayBits.W)
+    }
+
     val lockWays = if (dirType == "llc") posWays - 1 else posWays - 2
     val lockTable = RegInit(VecInit(Seq.fill(posSets) {
         VecInit(Seq.fill(lockWays) {
-            new DJBundle {
-                val valid = Bool()
-                val set   = UInt(param.setBits.W)
-                val way   = UInt(param.wayBits.W)
-            }.Lit(_.valid -> false.B)
+            (new OwnerWayEntry).Lit(_.valid -> false.B)
         })
     }))
     val lockNext = WireInit(lockTable)
+    val reservationTable = if (dirType == "sf") {
+        RegInit(VecInit(Seq.fill(posSets) {
+            VecInit(Seq.fill(lockWays) {
+                (new OwnerWayEntry).Lit(_.valid -> false.B)
+            })
+        }))
+    } else {
+        WireInit(VecInit(Seq.fill(posSets) {
+            VecInit(Seq.fill(lockWays) {
+                0.U.asTypeOf(new OwnerWayEntry)
+            })
+        }))
+    }
+    val reservationNext = WireInit(reservationTable)
 
     val shiftReg = RegInit(0.U.asTypeOf(new Shift))
 
@@ -183,35 +200,54 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val newReplMes_d3 = WireInit(0.U(repl.nBits.W))
     val resp_d3       = Wire(chiselTypeOf(io.resp.bits))
 
+    val pendingAllocValid_d3 = WireInit(false.B)
+
     val req_d4           = reqSftReg.head
     val readHitReg_d4    = RegEnable(readHit_d3, shiftReg.req(D3))
     val selWayOHReg_d4   = RegEnable(selWayOH_d3, shiftReg.req(D3))
     val newReplMesReg_d4 = RegEnable(newReplMes_d3, shiftReg.req(D3))
     val respReg_d4       = RegEnable(resp_d3, shiftReg.req(D3))
 
-    val writeHit_d0 = io.write.fire & io.write.bits.hit
-    val wriNoHit_d0 = io.write.fire & !io.write.bits.hit
-    val read_d0     = io.read.fire
-    val repl_d0     = shiftReg.updTagMeta_d4
+    val ownerWayInRange_d0 = io.write.bits.hnIdx.pos.way < lockWays.U
+    val ownerWayIdx_d0     = io.write.bits.hnIdx.pos.way(log2Ceil(lockWays) - 1, 0)
+    val ownerReservation_d0 = WireInit(0.U.asTypeOf(chiselTypeOf(reservationTable.head.head)))
+    val directAllocOwnerMatch_d0 = WireInit(false.B)
+    if (dirType == "sf") {
+        when(ownerWayInRange_d0) {
+            ownerReservation_d0 := reservationTable(io.write.bits.hnIdx.pos.set)(ownerWayIdx_d0)
+        }
+        directAllocOwnerMatch_d0 := ownerWayInRange_d0 &&
+            io.write.bits.hnIdx.dirBank === io.dirBank &&
+            ownerReservation_d0.valid &&
+            ownerReservation_d0.set === io.write.bits.Addr.set &&
+            UIntToOH(ownerReservation_d0.way) === io.write.bits.wayOH
+    }
+
+    val writeDirectAlloc_d0 = io.write.fire & io.write.bits.directAlloc
+    val writeHit_d0         = io.write.fire & io.write.bits.hit
+    val wriNoHit_d0         = io.write.fire & !io.write.bits.hit & !io.write.bits.directAlloc
+    val writeAny_d0         = writeHit_d0 | writeDirectAlloc_d0 | wriNoHit_d0
+    val read_d0             = io.read.fire
+    val repl_d0             = shiftReg.updTagMeta_d4
 
     val reqSet_d0 = Mux(repl_d0, req_d4.Addr.set, Mux(io.write.valid, io.write.bits.Addr.set, io.read.bits.Addr.set))
 
     val wriMask_d0    = Mux(repl_d0, selWayOHReg_d4, io.write.bits.wayOH)
     val wriMetaVec_d0 = Mux(repl_d0, req_d4.metaVec, io.write.bits.metaVec)
 
-    metaArray.io.req.valid         := (writeHit_d0 | wriNoHit_d0 | read_d0 | repl_d0) & resetDoneReg
+    metaArray.io.req.valid         := (writeAny_d0 | read_d0 | repl_d0) & resetDoneReg
     metaArray.io.req.bits.addr     := reqSet_d0
-    metaArray.io.req.bits.write    := writeHit_d0 | repl_d0
+    metaArray.io.req.bits.write    := writeHit_d0 | writeDirectAlloc_d0 | repl_d0
     metaArray.io.req.bits.mask.get := wriMask_d0
     metaArray.io.req.bits.data.foreach(_ := wriMetaVec_d0)
     HardwareAssertion.withEn(metaArray.io.req.ready, metaArray.io.req.valid)
     HardwareAssertion.withEn(metaArray.io.req.bits.mask.get =/= 0.U, metaArray.io.req.valid & metaArray.io.req.bits.write)
 
-    tagArray.io.req.valid         := (wriNoHit_d0 | read_d0 | repl_d0) & resetDoneReg
+    tagArray.io.req.valid         := (writeDirectAlloc_d0 | wriNoHit_d0 | read_d0 | repl_d0) & resetDoneReg
     tagArray.io.req.bits.addr     := reqSet_d0
-    tagArray.io.req.bits.write    := repl_d0
-    tagArray.io.req.bits.mask.get := selWayOHReg_d4
-    tagArray.io.req.bits.data.foreach(_ := req_d4.Addr.tag)
+    tagArray.io.req.bits.write    := writeDirectAlloc_d0 | repl_d0
+    tagArray.io.req.bits.mask.get := Mux(writeDirectAlloc_d0, io.write.bits.wayOH, selWayOHReg_d4)
+    tagArray.io.req.bits.data.foreach(_ := Mux(writeDirectAlloc_d0, io.write.bits.Addr.tag, req_d4.Addr.tag))
     HardwareAssertion.withEn(tagArray.io.req.ready, tagArray.io.req.valid)
     HardwareAssertion.withEn(tagArray.io.req.bits.mask.get =/= 0.U, tagArray.io.req.valid & tagArray.io.req.bits.write)
 
@@ -226,7 +262,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     HardwareAssertion.withEn(metaArray.io.req.ready, shiftReg.updTagMeta_d4)
     HardwareAssertion.withEn(tagArray.io.req.ready, shiftReg.updTagMeta_d4)
 
-    replArray.io.rreq.valid := (writeHit_d0 | wriNoHit_d0 | read_d0) & resetDoneReg
+    replArray.io.rreq.valid := (writeAny_d0 | read_d0) & resetDoneReg
     replArray.io.rreq.bits  := Mux(io.write.valid, io.write.bits.Addr.set, io.read.bits.Addr.set)
 
     replArray.io.wreq.valid        := shiftReg.wriUpdRepl_d4 | shiftReg.updTagMeta_d4 | (shiftReg.outDirResp_d4 & readHitReg_d4)
@@ -247,7 +283,15 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val replRespNeedVal = shiftReg.read(D2) | (shiftReg.write(D2) & !shiftReg.repl(D2))
     HAssert(!(replRespNeedVal ^ replArray.io.rresp.valid))
 
-    useWayVec_d2 := lockTable(reqSftReg(D2).hnIdx.pos.set).map(lock => Mux(lock.valid & lock.set === reqSftReg(D2).Addr.set, UIntToOH(lock.way), 0.U)).reduce(_ | _)
+    val registeredLockWayVec_d2 = lockTable.flatten
+        .map(lock => Mux(lock.valid & lock.set === reqSftReg(D2).Addr.set, UIntToOH(lock.way), 0.U))
+        .reduce(_ | _)
+    val registeredReservationWayVec_d2 = reservationTable.flatten
+        .map(reservation => Mux(reservation.valid & reservation.set === reqSftReg(D2).Addr.set, UIntToOH(reservation.way), 0.U))
+        .reduce(_ | _)
+    val pendingAllocSetMatch_d2 = pendingAllocValid_d3 && reqSet_d3 === reqSftReg(D2).Addr.set
+    val pendingAllocWayOH_d2    = Mux(pendingAllocSetMatch_d2, selWayOH_d3, 0.U)
+    useWayVec_d2 := registeredLockWayVec_d2 | registeredReservationWayVec_d2 | pendingAllocWayOH_d2
     val replWay_d2     = repl.get_replace_way(replMes_d2)
     val unuseWay_d2    = PriorityEncoder(~useWayVec_d2.asUInt)
     val selIsUsing_d2  = useWayVec_d2(replWay_d2)
@@ -302,10 +346,13 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
 
     newReplMes_d3 := repl.get_next_state(replMesReg_d3, OHToUInt(Mux(shiftReg.wriUpdRepl_d3, req_d3.wriWayOH, selWayOH_d3)))
 
-    val read_d3       = shiftReg.read(D3) & !shiftReg.write(D3) & !shiftReg.repl(D3)
-    val write_d3      = !shiftReg.read(D3) & shiftReg.write(D3) & !shiftReg.repl(D3)
-    val readRepl_d3   = shiftReg.read(D3) & !shiftReg.write(D3) & shiftReg.repl(D3)
-    val wriRepl_d3    = !shiftReg.read(D3) & shiftReg.write(D3) & shiftReg.repl(D3)
+    val read_d3     = shiftReg.read(D3) & !shiftReg.write(D3) & !shiftReg.repl(D3)
+    val write_d3    = !shiftReg.read(D3) & shiftReg.write(D3) & !shiftReg.repl(D3)
+    val readRepl_d3 = shiftReg.read(D3) & !shiftReg.write(D3) & shiftReg.repl(D3)
+    val wriRepl_d3  = !shiftReg.read(D3) & shiftReg.write(D3) & shiftReg.repl(D3)
+    if (dirType == "sf") {
+        pendingAllocValid_d3 := read_d3 & !hit_d3 & hasInvalid_d3
+    }
     val unLockHitVec2 = Wire(Vec(posSets, Vec(lockWays, Bool())))
     val reqHitVec2    = Wire(Vec(posSets, Vec(lockWays, Bool())))
     lockTable.zipWithIndex.foreach { case (lockSet, i) =>
@@ -364,12 +411,100 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     HAssert.withEn(PopCount(unLockHitVec2.flatten) === 1.U, io.unlock.valid & io.unlock.bits.hnIdx.dirBank === io.dirBank & (io.unlock.bits.hnIdx.pos.way < lockWays.U))
     HAssert.withEn(PopCount(reqHitVec2.flatten) === 1.U, shiftReg.req(D3))
 
+    if (dirType == "sf") {
+        reservationTable.zipWithIndex.foreach { case (reservationSet, i) =>
+            reservationSet.zipWithIndex.foreach { case (_, j) =>
+                val hnIdx = Wire(new HnIndex)
+                hnIdx.dirBank := io.dirBank
+                hnIdx.pos.set := i.U
+                hnIdx.pos.way := j.U
+
+                val clearReservationByWrite = writeDirectAlloc_d0 && io.write.bits.hnIdx.asUInt === hnIdx.asUInt
+                val clearReservationByUnlock = io.unlock.valid && io.unlock.bits.hnIdx.asUInt === hnIdx.asUInt
+                val reserveInvalidSfMiss = pendingAllocValid_d3 && req_d3.hnIdx.asUInt === hnIdx.asUInt
+
+                when(clearReservationByWrite || clearReservationByUnlock) {
+                    reservationNext(i)(j).valid := false.B
+                }.elsewhen(reserveInvalidSfMiss) {
+                    reservationNext(i)(j).valid := true.B
+                    reservationNext(i)(j).set   := reqSet_d3
+                    reservationNext(i)(j).way   := selWay_d3
+                }
+            }
+        }
+
+        val newReservationCount_d3 = PopCount(reservationNext.flatten.map(reservation =>
+            reservation.valid &
+                (reservation.set === reqSet_d3) &
+                (reservation.way === selWay_d3)
+        ))
+        HAssert.withEn(newReservationCount_d3 === 1.U, pendingAllocValid_d3, "Duplicate SF reservation")
+
+        when(pendingAllocValid_d3 || writeDirectAlloc_d0 || io.unlock.valid) {
+            reservationTable := reservationNext
+        }
+    }
+
     when(shiftReg.req(D3) | io.unlock.valid) {
         lockTable := lockNext
     }
 
     io.resp.valid := shiftReg.outDirResp_d4
     io.resp.bits  := respReg_d4
+
+    val respToRepl               = io.resp.valid && io.resp.bits.toRepl
+    val respToReplVictimValid    = respToRepl && io.resp.bits.metaVec.map(_.isValid).reduce(_ | _)
+    val respToReplVictimInvalid  = respToRepl && !io.resp.bits.metaVec.map(_.isValid).reduce(_ | _)
+    val readReplVictimValid_d3   = readRepl_d3 && resp_d3.metaVec.map(_.isValid).reduce(_ | _)
+    val readReplVictimInvalid_d3 = readRepl_d3 && !resp_d3.metaVec.map(_.isValid).reduce(_ | _)
+
+    HAssert.withEn(!io.write.bits.hit, io.write.valid && io.write.bits.directAlloc)
+    HAssert.withEn(io.write.bits.metaIsVal, io.write.valid && io.write.bits.directAlloc)
+    if (dirType == "sf") {
+        HAssert.withEn(directAllocOwnerMatch_d0, io.write.valid && io.write.bits.directAlloc)
+    }
+
+    HomeWrapperPerf.accumulate(
+        Seq(
+            ("zj_dirbase_read_valid", io.read.valid),
+            ("zj_dirbase_read_fire", io.read.fire),
+            ("zj_dirbase_read_stall", io.read.valid && !io.read.ready),
+            ("zj_dirbase_read_stall_reset", io.read.valid && !io.read.ready && !resetDoneReg),
+            ("zj_dirbase_read_stall_tag_meta", io.read.valid && !io.read.ready && !shiftReg.tagMetaReady),
+            ("zj_dirbase_read_stall_repl_will_write", io.read.valid && !io.read.ready && shiftReg.replWillWrite),
+            ("zj_dirbase_read_stall_write_valid", io.read.valid && !io.read.ready && io.write.valid),
+            ("zj_dirbase_write_valid", io.write.valid),
+            ("zj_dirbase_write_fire", io.write.fire),
+            ("zj_dirbase_write_stall", io.write.valid && !io.write.ready),
+            ("zj_dirbase_write_stall_reset", io.write.valid && !io.write.ready && !resetDoneReg),
+            ("zj_dirbase_write_stall_tag_meta", io.write.valid && !io.write.ready && !shiftReg.tagMetaReady),
+            ("zj_dirbase_write_stall_repl_will_write", io.write.valid && !io.write.ready && shiftReg.replWillWrite),
+            ("zj_dirbase_tag_meta_not_ready_cycle", !shiftReg.tagMetaReady),
+            ("zj_dirbase_repl_will_write_cycle", shiftReg.replWillWrite),
+            ("zj_dirbase_shift_read_cycle", shiftReg.read.orR),
+            ("zj_dirbase_shift_write_cycle", shiftReg.write.orR),
+            ("zj_dirbase_shift_repl_cycle", shiftReg.repl.orR),
+            ("zj_dirbase_resp_valid", io.resp.valid),
+            (s"zj_dirbase_${dirType}_resp_to_repl", respToRepl),
+            (s"zj_dirbase_${dirType}_resp_to_repl_victim_valid", respToReplVictimValid),
+            (s"zj_dirbase_${dirType}_resp_to_repl_victim_invalid", respToReplVictimInvalid),
+            ("zj_dirbase_unlock_valid", io.unlock.valid),
+            ("zj_dirbase_d3_read_miss", read_d3 && !hit_d3),
+            ("zj_dirbase_d3_read_hit", read_d3 && hit_d3),
+            (s"zj_dirbase_${dirType}_d3_read_repl", readRepl_d3),
+            (s"zj_dirbase_${dirType}_d3_read_repl_victim_valid", readReplVictimValid_d3),
+            (s"zj_dirbase_${dirType}_d3_read_repl_victim_invalid", readReplVictimInvalid_d3),
+            (s"zj_dirbase_${dirType}_d2_sel_is_using", shiftReg.req(D2) && selIsUsing_d2),
+            (s"zj_dirbase_${dirType}_pending_d3_conflict", shiftReg.req(D2) && pendingAllocSetMatch_d2),
+            (s"zj_dirbase_${dirType}_invalid_miss_reserve", pendingAllocValid_d3),
+            (s"zj_dirbase_${dirType}_d3_read_repl_has_invalid", readRepl_d3 && hasInvalid_d3),
+            (s"zj_dirbase_${dirType}_d3_read_repl_no_invalid", readRepl_d3 && !hasInvalid_d3),
+            (s"zj_dirbase_${dirType}_direct_alloc_fire", writeDirectAlloc_d0),
+            (s"zj_dirbase_${dirType}_direct_alloc_owner_match", writeDirectAlloc_d0 && directAllocOwnerMatch_d0),
+            ("zj_dirbase_d3_write", write_d3),
+            ("zj_dirbase_d3_wri_repl", wriRepl_d3)
+        )
+    )
 
     HardwareAssertion.placePipe(1)
 }
