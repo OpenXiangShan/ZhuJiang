@@ -17,7 +17,9 @@ class InitializeHwaPorts extends Phase {
 
   private def doDefModules(in: Seq[DefModule]): Seq[DefModule] = {
     in.map({
-      case mm@firrtl.ir.Module(_, _, _, _, ports, body) =>
+      case mm: firrtl.ir.Module =>
+        val ports = mm.ports
+        val body  = mm.body
         val hwaPorts = ports.filter(p => pattern.matches(p.name)).map(_.name)
         if(hwaPorts.isEmpty) {
           mm
