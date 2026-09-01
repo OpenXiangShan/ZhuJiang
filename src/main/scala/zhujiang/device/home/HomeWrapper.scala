@@ -14,11 +14,16 @@ import xs.utils.mbist.MbistInterface
 import xs.utils.sram.{SramCtrlBundle, SramHelper}
 import zhujiang.chi.FlitHelper.{connIcn, hwaConn}
 import zhujiang.chi._
+import zhujiang.perf.ZJPerf
 import zhujiang.utils.DoubleCounterClockGate
 import zhujiang.{ZJDftWires, ZJRawModule}
 
 @instantiable
 class HomeWrapper(nodes: Seq[Node], nrFriends: Int)(implicit p: Parameters) extends ZJRawModule with ImplicitClock with ImplicitReset {
+    // HomeWrapper is elaborated once as a reusable Definition. Export its
+    // child events so each parent Instance can be collected independently.
+    ZJPerf.beginDefinition()
+
     private val node = nodes.head
     @public
     val io = IO(new Bundle {
@@ -153,4 +158,5 @@ class HomeWrapper(nodes: Seq[Node], nrFriends: Int)(implicit p: Parameters) exte
         }
         connIcn(dbgTx, dbgBd)
     }
+    @public val perfEvents = ZJPerf.collect()
 }
