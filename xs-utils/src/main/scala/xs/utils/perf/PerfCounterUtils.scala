@@ -165,6 +165,37 @@ object XSPerfHistogram extends HasRegularPerfName {
   }
 }
 
+object XSPerfMin extends HasRegularPerfName {
+  private[perf] def next(current: UInt, sampled: Bool, value: UInt, enable: Bool): UInt =
+    Mux(enable && (!sampled || value < current), value, current)
+
+  private def create(perfName: String, perfCnt: UInt, enable: Bool, ctrl: LogPerfIO)(implicit p: Parameters): Unit = {
+    judgeName(perfName)
+    if (p(PerfCounterOptionsKey).enablePerfPrint) {
+      val min = RegInit(0.U(64.W))
+      val sampled = RegInit(false.B)
+      val nextMin = next(min, sampled, perfCnt, enable)
+      val nextSampled = sampled || enable
+      min := Mux(ctrl.clean, 0.U, nextMin)
+      sampled := Mux(ctrl.clean, false.B, nextSampled)
+
+      when(ctrl.dump) {
+        XSPerfPrint(p"${perfName}_min, ${Mux(nextSampled, nextMin, 0.U)}\n")(ctrl)
+      }
+    }
+  }
+
+  def apply(events: Seq[(String, UInt, Bool)])(implicit p: Parameters): Unit = {
+    if (p(PerfCounterOptionsKey).enablePerfPrint) {
+      val helper = Module(new LogPerfHelper)
+      for ((name, cnt, en) <- events) create(name, cnt, en, helper.io)
+    }
+  }
+
+  def apply(perfName: String, perfCnt: UInt, enable: Bool)(implicit p: Parameters): Unit =
+    apply(Seq((perfName, perfCnt, enable)))(p)
+}
+
 object XSPerfMax extends HasRegularPerfName {
   private def create(perfName: String, perfCnt: UInt, enable: Bool, ctrl:LogPerfIO)(implicit p: Parameters): Unit = {
     judgeName(perfName)
@@ -329,4 +360,3 @@ object XSPerfPrint {
     XSLog(XSLogLevel.PERF, ctrlInfo)(true, true.B, pable)
   }
 }
-
