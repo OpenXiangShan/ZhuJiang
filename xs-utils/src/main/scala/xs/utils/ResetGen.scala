@@ -56,7 +56,7 @@ class ResetGenInner(SYNC_NUM: Int = 2) extends BlackBox with HasBlackBoxInline {
        |  o_reset = i_dft_scan_mode ? lgc_rst : real_reset;
        |}
        |""".stripMargin
-  difftest.DifftestModule.createCppExtModule(modName, cppExtModule)
+  DifftestCompat.createCppExtModule(modName, cppExtModule)
 
   setInline(s"$modName.sv",
     s"""// VCS coverage exclude_file

@@ -2,6 +2,7 @@ package xs.utils.perf
 
 import chisel3._
 import chisel3.util.HasBlackBoxInline
+import xs.utils.DifftestCompat
 
 class LogPerfIO extends Bundle {
   val timer = UInt(64.W)
@@ -29,7 +30,7 @@ class LogPerfHelper extends BlackBox with HasBlackBoxInline {
       |  dump      = 0;
       |}
       |""".stripMargin
-  difftest.DifftestModule.createCppExtModule("LogPerfHelper", cppExtModule)
+  DifftestCompat.createCppExtModule("LogPerfHelper", cppExtModule)
 
   val sverilog =
     """`ifndef SIM_TOP_MODULE_NAME
