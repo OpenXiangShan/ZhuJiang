@@ -8,6 +8,7 @@ import xijiang.{NodeType, Ring}
 import xs.utils.debug.HardwareAssertionKey
 import xs.utils.dft.{BaseTestBundle, PowerDomainTestBundle}
 import xs.utils.mbist.{MbistInterface, MbistPipeline}
+import zhujiang.perf.ZJPerf
 import xs.utils.sram.{SramBroadcastBundle, SramCtrlBundle, SramHelper}
 import xs.utils.{DFTResetSignals, ResetGen}
 import zhujiang.axi.{AxiBuffer, AxiBundle, ExtAxiBundle}
@@ -91,6 +92,7 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
         hfDevSeq(i).io.ramctl := ramctl
         hfDevSeq(i).suggestName(devName)
     }
+    ZJPerf.consume(hfDevSeq.map(_.perfEvents))
 
     private val ioIcns = ring.icnSns.getOrElse(Seq()) ++
         ring.icnHis.getOrElse(Seq()) ++
