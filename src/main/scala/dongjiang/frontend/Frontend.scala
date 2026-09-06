@@ -31,7 +31,7 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
         val fastData = Decoupled(new DataTask)
         val cleanDB  = Decoupled(new HnTxnID with HasDataVec)
 
-        val readDir = Decoupled(new Addr with HasPackHnIdx)
+        val readDir = Decoupled(new Addr with HasPackHnIdx with HasReserveMissWay)
         val respDir = Flipped(Valid(new DirMsg))
 
         val cmtTask = Valid(new CommitTask with HasHnTxnID)

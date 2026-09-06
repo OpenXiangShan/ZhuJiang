@@ -17,7 +17,7 @@ class Directory(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
     val io = IO(new Bundle {
         val config = Input(new DJConfigIO())
 
-        val readVec = Vec(djparam.nrDirBank, Flipped(Decoupled(new Addr with HasPackHnIdx)))
+        val readVec = Vec(djparam.nrDirBank, Flipped(Decoupled(new Addr with HasPackHnIdx with HasReserveMissWay)))
 
         val rRespVec = Vec(djparam.nrDirBank, Valid(new DirMsg))
 

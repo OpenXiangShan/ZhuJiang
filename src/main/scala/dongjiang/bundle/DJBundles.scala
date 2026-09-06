@@ -71,6 +71,10 @@ trait HasAddrValid { this: DJBundle =>
     val addrVal = Bool()
 }
 
+trait HasReserveMissWay { this: DJBundle =>
+    val reserveMissWay = Bool()
+}
+
 trait HasHnIdx extends DJBundle { this: DJBundle =>
     val dirBank = UInt(dirBankBits.W)
     val pos = new DJBundle {

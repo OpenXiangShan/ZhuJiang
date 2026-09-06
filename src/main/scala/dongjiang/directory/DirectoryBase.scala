@@ -59,7 +59,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val io = IO(new Bundle {
         val config  = Input(new DJConfigIO())
         val dirBank = Input(UInt(dirBankBits.W))
-        val read    = Flipped(Decoupled(new Addr(dirType) with HasPackHnIdx))
+        val read    = Flipped(Decoupled(new Addr(dirType) with HasPackHnIdx with HasReserveMissWay))
         val write   = Flipped(Decoupled(new DirEntry(dirType) with HasPackHnIdx with HasDirectAlloc))
         val resp    = Valid(new DirEntry(dirType) with HasHnTxnID { val toRepl = Bool() })
         val unlock  = Flipped(Valid(new PackHnIdx))
@@ -160,16 +160,18 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
             readDirLatency,
             new DJBundle with HasAddr with HasPackHnIdx {
                 override def addrType: String = dirType
-                val metaVec  = Vec(param.nrMetas, new ChiState(dirType))
-                val wriWayOH = UInt(param.ways.W)
+                val metaVec        = Vec(param.nrMetas, new ChiState(dirType))
+                val wriWayOH       = UInt(param.ways.W)
+                val reserveMissWay = Bool()
             }
         )
     )
     when(io.write.fire | io.read.fire) {
-        reqSftReg.last.addr     := Mux(io.write.valid, io.write.bits.addr, io.read.bits.addr)
-        reqSftReg.last.hnIdx    := Mux(io.write.valid, io.write.bits.hnIdx, io.read.bits.hnIdx)
-        reqSftReg.last.wriWayOH := Mux(io.write.valid, io.write.bits.wayOH, 0.U)
-        reqSftReg.last.metaVec  := Mux(io.write.valid, io.write.bits.metaVec, 0.U.asTypeOf(reqSftReg.last.metaVec))
+        reqSftReg.last.addr           := Mux(io.write.valid, io.write.bits.addr, io.read.bits.addr)
+        reqSftReg.last.hnIdx          := Mux(io.write.valid, io.write.bits.hnIdx, io.read.bits.hnIdx)
+        reqSftReg.last.wriWayOH       := Mux(io.write.valid, io.write.bits.wayOH, 0.U)
+        reqSftReg.last.metaVec        := Mux(io.write.valid, io.write.bits.metaVec, 0.U.asTypeOf(reqSftReg.last.metaVec))
+        reqSftReg.last.reserveMissWay := Mux(io.write.valid, false.B, io.read.bits.reserveMissWay)
     }
     reqSftReg.zipWithIndex.foreach { case (sft, i) =>
         if (i > 0) { when(shiftReg.req.orR | io.read.fire | io.write.fire) { reqSftReg(i - 1) := sft } }
@@ -200,7 +202,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val newReplMes_d3 = WireInit(0.U(repl.nBits.W))
     val resp_d3       = Wire(chiselTypeOf(io.resp.bits))
 
-    val pendingAllocValid_d3 = WireInit(false.B)
+    val pendingAllocValid_d3     = WireInit(false.B)
+    val pendingStashMissValid_d3 = WireInit(false.B)
 
     val req_d4           = reqSftReg.head
     val readHitReg_d4    = RegEnable(readHit_d3, shiftReg.req(D3))
@@ -289,9 +292,12 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val registeredReservationWayVec_d2 = reservationTable.flatten
         .map(reservation => Mux(reservation.valid & reservation.set === reqSftReg(D2).Addr.set, UIntToOH(reservation.way), 0.U))
         .reduce(_ | _)
-    val pendingAllocSetMatch_d2 = pendingAllocValid_d3 && reqSet_d3 === reqSftReg(D2).Addr.set
-    val pendingAllocWayOH_d2    = Mux(pendingAllocSetMatch_d2, selWayOH_d3, 0.U)
-    useWayVec_d2 := registeredLockWayVec_d2 | registeredReservationWayVec_d2 | pendingAllocWayOH_d2
+    val pendingAllocSetMatch_d2     = pendingAllocValid_d3 && reqSet_d3 === reqSftReg(D2).Addr.set
+    val pendingAllocWayOH_d2        = Mux(pendingAllocSetMatch_d2, selWayOH_d3, 0.U)
+    val pendingStashMissSetMatch_d2 = pendingStashMissValid_d3 && reqSet_d3 === reqSftReg(D2).Addr.set
+    val pendingStashMissWayOH_d2    = Mux(pendingStashMissSetMatch_d2, selWayOH_d3, 0.U)
+    useWayVec_d2 := registeredLockWayVec_d2 | registeredReservationWayVec_d2 |
+        pendingAllocWayOH_d2 | pendingStashMissWayOH_d2
     val replWay_d2     = repl.get_replace_way(replMes_d2)
     val unuseWay_d2    = PriorityEncoder(~useWayVec_d2.asUInt)
     val selIsUsing_d2  = useWayVec_d2(replWay_d2)
@@ -346,12 +352,15 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
 
     newReplMes_d3 := repl.get_next_state(replMesReg_d3, OHToUInt(Mux(shiftReg.wriUpdRepl_d3, req_d3.wriWayOH, selWayOH_d3)))
 
-    val read_d3     = shiftReg.read(D3) & !shiftReg.write(D3) & !shiftReg.repl(D3)
-    val write_d3    = !shiftReg.read(D3) & shiftReg.write(D3) & !shiftReg.repl(D3)
-    val readRepl_d3 = shiftReg.read(D3) & !shiftReg.write(D3) & shiftReg.repl(D3)
-    val wriRepl_d3  = !shiftReg.read(D3) & shiftReg.write(D3) & shiftReg.repl(D3)
+    val read_d3      = shiftReg.read(D3) & !shiftReg.write(D3) & !shiftReg.repl(D3)
+    val write_d3     = !shiftReg.read(D3) & shiftReg.write(D3) & !shiftReg.repl(D3)
+    val readRepl_d3  = shiftReg.read(D3) & !shiftReg.write(D3) & shiftReg.repl(D3)
+    val wriRepl_d3   = !shiftReg.read(D3) & shiftReg.write(D3) & shiftReg.repl(D3)
+    val stashMiss_d3 = if (dirType == "llc") read_d3 & req_d3.reserveMissWay & !hit_d3 else false.B
     if (dirType == "sf") {
         pendingAllocValid_d3 := read_d3 & !hit_d3 & hasInvalid_d3
+    } else {
+        pendingStashMissValid_d3 := stashMiss_d3
     }
     val unLockHitVec2 = Wire(Vec(posSets, Vec(lockWays, Bool())))
     val reqHitVec2    = Wire(Vec(posSets, Vec(lockWays, Bool())))
@@ -365,6 +374,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
             val unLockHit = io.unlock.valid & io.unlock.bits.hnIdx.asUInt === hnIdx.asUInt
             val reqHit    = shiftReg.req(D3) & req_d3.hnIdx.asUInt === hnIdx.asUInt
             val readMiss  = read_d3 & reqHit & !hit_d3
+            val stashMiss = stashMiss_d3 & reqHit
             val readHit   = read_d3 & reqHit & hit_d3
             val write     = write_d3 & reqHit
             val readRepl  = readRepl_d3 & reqHit
@@ -383,12 +393,13 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
             val dontCare = Cat(lock.valid, lock.valid)
             val state = PriorityMux(
                 Seq(
-                    readMiss -> "b00".U,
-                    readHit  -> "b01".U,
-                    write    -> dontCare,
-                    readRepl -> "b01".U,
-                    wriRepl  -> dontCare,
-                    true.B   -> dontCare
+                    stashMiss -> "b01".U,
+                    readMiss  -> "b00".U,
+                    readHit   -> "b01".U,
+                    write     -> dontCare,
+                    readRepl  -> "b01".U,
+                    wriRepl   -> dontCare,
+                    true.B    -> dontCare
                 )
             )
 
