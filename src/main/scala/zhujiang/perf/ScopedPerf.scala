@@ -74,18 +74,30 @@ sealed trait ZJPerfEventSpec {
     def name: String
     def level: ZJPerfLevel.Value
     def ownerId: Int
+    def ownerPath: String
 }
 
-case class ZJPerfAccumulateSpec(name: String, level: ZJPerfLevel.Value, ownerId: Int) extends ZJPerfEventSpec
+case class ZJPerfAccumulateSpec(
+    name: String,
+    level: ZJPerfLevel.Value,
+    ownerId: Int,
+    ownerPath: String = ""
+) extends ZJPerfEventSpec
 
-case class ZJPerfMaxSpec(name: String, level: ZJPerfLevel.Value, ownerId: Int) extends ZJPerfEventSpec
+case class ZJPerfMaxSpec(
+    name: String,
+    level: ZJPerfLevel.Value,
+    ownerId: Int,
+    ownerPath: String = ""
+) extends ZJPerfEventSpec
 
 case class ZJPerfDistributionSpec(
     name: String,
     ranges: Seq[HistogramRange],
     includeMinMax: Boolean,
     level: ZJPerfLevel.Value,
-    ownerId: Int
+    ownerId: Int,
+    ownerPath: String = ""
 ) extends ZJPerfEventSpec
 
 case class ZJPerfHistogramSpec(
@@ -96,7 +108,8 @@ case class ZJPerfHistogramSpec(
     leftStrict: Boolean,
     rightStrict: Boolean,
     level: ZJPerfLevel.Value,
-    ownerId: Int
+    ownerId: Int,
+    ownerPath: String = ""
 ) extends ZJPerfEventSpec
 
 class ZJPerfEvent extends Bundle {
@@ -145,7 +158,7 @@ trait ZJPerfBackend {
 
     def newScope(kind: ZJPerfScopeKind.Value): ZJPerfBackendScope
 
-    def consume(exports: Seq[ZJPerfExport])(implicit p: Parameters): Unit
+    def consume(exports: Seq[(String, ZJPerfExport)])(implicit p: Parameters): Unit
 }
 
 // Parent designs override this key to select a different backend.
@@ -212,7 +225,7 @@ object ZhuJiangLocalPerfBackend extends ZJPerfBackend {
         }
     }
 
-    override def consume(exports: Seq[ZJPerfExport])(implicit p: Parameters): Unit = ()
+    override def consume(exports: Seq[(String, ZJPerfExport)])(implicit p: Parameters): Unit = ()
 }
 
 import zhujiang.perf.ZJPerfLevel.ZJPerfLevel
@@ -288,7 +301,7 @@ private class ScopedPerf(kind: ZJPerfScopeKind) {
     }
 
     // Forward Definition-scope exports to the configured backend.
-    def consume(exports: Seq[ZJPerfExport])(implicit p: Parameters): Unit =
+    def consume(exports: Seq[(String, ZJPerfExport)])(implicit p: Parameters): Unit =
         p(ZJPerfBackendKey).consume(exports)
 }
 
@@ -367,6 +380,6 @@ object ZJPerf {
     }
 
     // The parent calls this after instantiating a Definition and wiring its export.
-    def consume(exports: => Seq[ZJPerfExport])(implicit p: Parameters): Unit =
+    def consume(exports: => Seq[(String, ZJPerfExport)])(implicit p: Parameters): Unit =
         if (enabled) currentScope.consume(exports)
 }

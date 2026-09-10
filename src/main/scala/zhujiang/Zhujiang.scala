@@ -108,7 +108,9 @@ class Zhujiang(implicit p: Parameters) extends ZJModule with NocIOHelper {
         hfDevSeq(i).io.ramctl := ramctl
         hfDevSeq(i).suggestName(devName)
     }
-    ZJPerf.consume(hfDevSeq.map(_.perfEvents))
+    ZJPerf.consume(hfDevSeq.zip(hfIcnSeq).map { case (dev, (_, icns)) =>
+        icns.head.node.deviceName -> dev.perfEvents
+    })
 
     private val ioIcns = ring.icnSns.getOrElse(Seq()) ++
         ring.icnHis.getOrElse(Seq()) ++
