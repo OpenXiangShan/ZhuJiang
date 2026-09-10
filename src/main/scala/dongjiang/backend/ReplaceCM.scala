@@ -110,6 +110,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         val updHnTxnID = Decoupled(new UpdHnTxnID)
         val dataTask   = Decoupled(new DataTask)
         val dataResp   = Flipped(Valid(new HnTxnID))
+        val serviceLatency = Option.when(ZJPerf.enabled)(Output(Valid(UInt(64.W))))
 
         val dbg = Valid(new Bundle {
             val task = new PackHnIdx with HasHnTxnID
@@ -268,11 +269,10 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.bits.dataVec     := DataVec.Full
     io.dataTask.bits.ds          := reg.ds
     io.dataTask.bits.qos         := reg.qos
-
-    io.cleanPoS.valid        := reg.isCleanPoS
-    io.cleanPoS.bits.hnIdx   := Mux(reg.isCleanPosT, reg.getHnIdx, reg.repl.getHnIdx)
-    io.cleanPoS.bits.channel := Mux(reg.isCleanPosT, ChiChannel.SNP, Mux(reg.isReplSF, ChiChannel.SNP, ChiChannel.REQ))
-    io.cleanPoS.bits.qos     := reg.qos
+    io.cleanPoS.valid            := reg.isCleanPoS
+    io.cleanPoS.bits.hnIdx       := Mux(reg.isCleanPosT, reg.getHnIdx, reg.repl.getHnIdx)
+    io.cleanPoS.bits.channel     := Mux(reg.isCleanPosT, ChiChannel.SNP, Mux(reg.isReplSF, ChiChannel.SNP, ChiChannel.REQ))
+    io.cleanPoS.bits.qos         := reg.qos
 
     io.resp.valid        := reg.isRespCmt
     io.resp.bits.hnTxnID := reg.hnTxnID
@@ -391,6 +391,13 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     }
 
     ZJPerf.whenEnabled {
+        val serviceTracker = Module(new ServiceLatencyTracker)
+        serviceTracker.io.start  := io.alloc.fire
+        serviceTracker.io.finish := (io.resp.fire || io.cleanPoS.fire) && next.isFree
+        io.serviceLatency.get    := serviceTracker.io.sample
+    }
+
+    ZJPerf.whenEnabled {
         ZJPerf.accumulate(
             Seq(
                 ("zj_repl_req_pos_fire", io.reqPoS.fire),
@@ -440,6 +447,14 @@ class ReplaceCM(implicit p: Parameters) extends DJModule {
     })
 
     val entries = Seq.fill(nrReplaceCM) { Module(new ReplaceEntry()) }
+
+    ZJPerf.whenEnabled {
+        ReqPerf.aggregateDistribution(
+            "zj_hn_replacecm_service_latency",
+            entries.map(_.io.serviceLatency.get),
+            ReqPerf.LocalLatencyRanges
+        )
+    }
 
     ZJPerf.whenEnabled {
         val occupancy = PopCount(entries.map(_.io.dbg.valid))

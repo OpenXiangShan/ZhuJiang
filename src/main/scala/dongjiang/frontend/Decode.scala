@@ -8,16 +8,18 @@ import zhujiang.chi._
 import zhujiang.chi.ReqOpcode._
 import zhujiang.chi.DatOpcode._
 import dongjiang._
-import dongjiang.backend.{CMTask, CommitTask}
+import dongjiang.backend.{CMTask, CommitTask, ReqPerf, ReqPerfFamily}
 import dongjiang.utils._
 import dongjiang.bundle._
 import dongjiang.directory._
 import xs.utils.debug._
+import zhujiang.perf.ZJPerf
 import dongjiang.frontend.decode._
 import dongjiang.data._
 import xs.utils.ParallelLookUp
 import dongjiang.backend.GetDecRes
 import dongjiang.frontend.decode.Decode._
+import xs.utils.GTimer
 
 class FstDec(implicit p: Parameters) extends Module {
     val io = IO(new Bundle {
@@ -90,6 +92,9 @@ class Decode(implicit p: Parameters) extends DJModule {
     dontTouch(decList_s2)
     dontTouch(decList_s3)
 
+    val respCompData_s3 = validReg_s3 & !taskCode_s3.isValid & cmtCode_s3.sendResp &
+        cmtCode_s3.channel === ChiChannel.DAT & cmtCode_s3.opcode === CompData
+
     io.cmtTask_s3.valid            := validReg_s3
     io.cmtTask_s3.bits.hnTxnID     := taskReg_s3.hnIdx.getTxnID
     io.cmtTask_s3.bits.qos         := taskReg_s3.qos
@@ -105,8 +110,6 @@ class Decode(implicit p: Parameters) extends DJModule {
     io.cmtTask_s3.bits.ds.set(taskReg_s3.addr, respDir_s3.llc.way)
     HardwareAssertion.withEn(taskCode_s3.isValid | cmtCode_s3.isValid, validReg_s3)
     HardwareAssertion.withEn(respDir_s3.sf.metaIsVal, validReg_s3 & taskCode_s3.snoop)
-
-    val respCompData_s3 = validReg_s3 & !taskCode_s3.isValid & cmtCode_s3.sendResp & cmtCode_s3.channel === ChiChannel.DAT & cmtCode_s3.opcode === CompData
 
     io.reqDB_s3.valid        := respCompData_s3
     io.reqDB_s3.bits.hnTxnID := taskReg_s3.hnIdx.getTxnID
@@ -131,6 +134,64 @@ class Decode(implicit p: Parameters) extends DJModule {
     io.fastData_s3.bits.dataVec     := taskReg_s3.chi.dataVec
     io.fastData_s3.bits.ds.set(taskReg_s3.addr, respDir_s3.llc.way)
     HardwareAssertion.withEn(cmtCode_s3.dataOp.isValid, io.fastData_s3.valid)
+
+    ZJPerf.whenEnabled {
+        val isCacheableReq = validReg_s3 &&
+            taskReg_s3.chi.channel === ChiChannel.REQ && taskReg_s3.chi.memAttr.cacheable
+        val isReadNsd    = isCacheableReq && taskReg_s3.chi.opcode === ReadNotSharedDirty
+        val isReadUnique = isCacheableReq && taskReg_s3.chi.opcode === ReadUnique
+        val isReadOnce   = isCacheableReq && taskReg_s3.chi.opcode === ReadOnce
+        val localHit     = isReadNsd && respDir_s3.llc.hit && respCompData_s3
+        val perfTimer    = GTimer()
+        val ingressCycle = taskReg_s3.chi.perfIngressCycle.get
+        val cmtPerf      = io.cmtTask_s3.bits.perf.get
+        val family       = ReqPerf.family(taskReg_s3.chi.opcode, taskReg_s3.chi.isRead, taskReg_s3.chi.isWrite)
+        val trackedReq   = isCacheableReq && family =/= ReqPerfFamily.NONE
+
+        cmtPerf.valid        := trackedReq
+        cmtPerf.family       := family
+        cmtPerf.opcode       := taskReg_s3.chi.opcode
+        cmtPerf.llcHit       := respDir_s3.llc.hit
+        cmtPerf.sawDMT       := false.B
+        cmtPerf.sawDCT       := false.B
+        cmtPerf.ingressCycle := ingressCycle
+        cmtPerf.frontLatency := perfTimer - ingressCycle
+
+        ZJPerf.distribution(
+            "zj_hn_frontend_req_latency",
+            perfTimer - ingressCycle,
+            trackedReq,
+            ReqPerf.LocalLatencyRanges,
+            includeMinMax = false
+        )
+
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_hn_readnsd", isReadNsd),
+                ("zj_hn_readnsd_llc_hit", isReadNsd && respDir_s3.llc.hit),
+                ("zj_hn_readnsd_llc_miss", isReadNsd && !respDir_s3.llc.hit),
+                ("zj_hn_readunique", isReadUnique),
+                ("zj_hn_readunique_llc_hit", isReadUnique && respDir_s3.llc.hit),
+                ("zj_hn_readonce", isReadOnce),
+                ("zj_hn_readonce_llc_hit", isReadOnce && respDir_s3.llc.hit)
+            )
+        )
+
+        val localHitFastData         = localHit && io.fastData_s3.fire
+        val localHitDeferredReqDB    = localHit && !io.reqDB_s3.ready
+        val localHitDeferredDataTask = localHit && io.reqDB_s3.ready && !io.fastData_s3.ready
+        HAssert.withEn(
+            PopCount(Seq(localHitFastData, localHitDeferredReqDB, localHitDeferredDataTask)) === 1.U,
+            localHit
+        )
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_local_hit_fast_data_fire", localHitFastData),
+                ("zj_local_hit_deferred_reqdb", localHitDeferredReqDB),
+                ("zj_local_hit_deferred_datatask", localHitDeferredDataTask)
+            )
+        )
+    }
 
     val cleanUnuseDB_s3 = validReg_s3 & taskReg_s3.alr.reqDB & !taskReg_s3.chi.isFullSize & !(respDir_s3.sf.hit | respDir_s3.llc.hit)
     io.cleanDB_s3.valid        := cleanUnuseDB_s3

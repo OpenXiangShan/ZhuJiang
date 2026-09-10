@@ -10,6 +10,12 @@ import dongjiang.bundle.ChiChannel._
 import xs.utils.debug._
 import zhujiang.chi.ReqOpcode._
 import dongjiang.bundle._
+import zhujiang.perf.ZJPerf
+
+class TimedReqFlit(implicit p: Parameters) extends Bundle {
+    val req          = new ReqFlit(false)
+    val ingressCycle = UInt(64.W)
+}
 
 class ReqToChiTask(implicit p: Parameters) extends DJModule {
 
@@ -17,7 +23,8 @@ class ReqToChiTask(implicit p: Parameters) extends DJModule {
 
         val config = new DJConfigIO()
 
-        val rxReq = Flipped(Decoupled(new ReqFlit(false)))
+        val rxReq            = Flipped(Decoupled(new ReqFlit(false)))
+        val perfIngressCycle = Option.when(ZJPerf.enabled)(Input(UInt(64.W)))
 
         val chiTask = Decoupled(new PackChi with HasAddr with HasQoS)
     })
@@ -35,6 +42,7 @@ class ReqToChiTask(implicit p: Parameters) extends DJModule {
     task.chi.channel := REQ
     task.chi.opcode  := req.Opcode
     task.chi.txnID   := req.TxnID
+    task.chi.perfIngressCycle.foreach(_ := io.perfIngressCycle.get)
 
     task.chi.order      := req.Order
     task.chi.snpAttr    := req.SnpAttr
@@ -85,6 +93,7 @@ class SnpToChiTask(implicit p: Parameters) extends DJModule {
     task.chi.channel := SNP
     task.chi.opcode  := snp.Opcode
     task.chi.txnID   := snp.TxnID
+    task.chi.perfIngressCycle.foreach(_ := 0.U)
 
     task.chi.order      := DontCare
     task.chi.snpAttr    := DontCare

@@ -55,6 +55,8 @@ class SnoopEntry(implicit p: Parameters) extends DJModule {
         val rxRsp = Flipped(Valid(new RespFlit()))
         val rxDat = Flipped(Valid(new DataFlit()))
 
+        val serviceLatency = Option.when(ZJPerf.enabled)(Output(Valid(UInt(64.W))))
+
         val dbg = Valid(new ReadState with HasHnTxnID)
     })
 
@@ -221,6 +223,13 @@ class SnoopEntry(implicit p: Parameters) extends DJModule {
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
 
+    ZJPerf.whenEnabled {
+        val serviceTracker = Module(new ServiceLatencyTracker)
+        serviceTracker.io.start  := io.alloc.fire
+        serviceTracker.io.finish := io.resp.fire
+        io.serviceLatency.get    := serviceTracker.io.sample
+    }
+
     HardwareAssertion.checkTimeout(reg.isFree, TIMEOUT_SNP, cf"TIMEOUT: Snoop State[${reg.state}]")
 }
 
@@ -240,6 +249,14 @@ class SnoopCM(implicit p: Parameters) extends DJModule {
     val entries = Seq.fill(nrSnoopCM) { Module(new SnoopEntry()) }
     val dbgVec  = VecInit(entries.map(_.io.dbg))
     dontTouch(dbgVec)
+
+    ZJPerf.whenEnabled {
+        ReqPerf.aggregateDistribution(
+            "zj_hn_snoopcm_service_latency",
+            entries.map(_.io.serviceLatency.get),
+            ReqPerf.LocalLatencyRanges
+        )
+    }
 
     entries.foreach(_.io.config := io.config)
     Alloc(entries.map(_.io.alloc), io.alloc)

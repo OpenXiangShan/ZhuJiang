@@ -5,7 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import zhujiang.chi._
 import dongjiang._
-import dongjiang.backend.UpdHnTxnID
+import dongjiang.backend.{ReqPerf, ServiceLatencyTracker, UpdHnTxnID}
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
@@ -78,6 +78,7 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
         val dsWriDB   = Flipped(Valid(new DCID with HasBeatNum))
         val txDatFire = Flipped(Valid(new DCID with HasBeatNum))
         val dbWriDS   = Flipped(Valid(new DCID with HasBeatNum))
+        val serviceLatency = Option.when(ZJPerf.enabled)(Output(Valid(UInt(64.W))))
         val txDatBits = Output(new DataFlit)
 
         val state = Valid(new HnTxnID with HasDataVec with HasDBIDVec)
@@ -323,6 +324,13 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
 
+    ZJPerf.whenEnabled {
+        val serviceTracker = Module(new ServiceLatencyTracker)
+        serviceTracker.io.start  := io.alloc.fire
+        serviceTracker.io.finish := io.release.fire && next.isFree
+        io.serviceLatency.get    := serviceTracker.io.sample
+    }
+
     ZJPerf.accumulate(
         Seq(
             ("zj_datactrl_alloc_fire", io.alloc.fire),
@@ -377,6 +385,14 @@ class DataCM(implicit p: Parameters) extends DJModule {
     val taskReg     = RegEnable(io.task.bits, io.task.fire)
     val dbgVec      = VecInit(entries.map(_.io.state))
     dontTouch(dbgVec)
+
+    ZJPerf.whenEnabled {
+        ReqPerf.aggregateDistribution(
+            "zj_hn_datacm_service_latency",
+            entries.map(_.io.serviceLatency.get),
+            ReqPerf.LocalLatencyRanges
+        )
+    }
 
     dbgVec.zipWithIndex.foreach { case (src, i) =>
         dbgVec.zipWithIndex.foreach { case (sink, j) =>

@@ -19,6 +19,7 @@ import dongjiang.backend.CmtState._
 import chisel3.experimental.BundleLiterals._
 import dongjiang.frontend.decode.Decode.{w_ci, w_si, w_sti, w_ti}
 import zhujiang.perf.ZJPerf
+import xs.utils.GTimer
 
 object CmtState {
     val width   = 3
@@ -106,7 +107,8 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
 
         val cleanPoS = Decoupled(new PosClean)
 
-        val state = Output(new State)
+        val state           = Output(new State)
+        val reqPerfComplete = Option.when(ZJPerf.enabled)(Output(Valid(new ReqPerfSample)))
     })
     HAssert.withEn(io.alloc.bits.dirBank === io.hnIdx.dirBank, io.alloc.valid)
 
@@ -325,6 +327,33 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     val cmTaskHit  = Cat(io.cmTaskVec.map(_.fire)).orR
     val decodeFire = io.trdDecOut.fire | io.fthDecOut.fire
 
+    ZJPerf.whenEnabled {
+        val perfTraceReg  = RegInit(0.U.asTypeOf(new ReqPerfTrace))
+        val perfTraceNext = WireInit(perfTraceReg)
+
+        val readTaskFire = io.cmTaskVec(CMID.READ).fire
+        val dctRespHit   = cmRespHit && io.cmResp.bits.taskInst.fwdValid
+
+        when(allocHit) {
+            perfTraceNext := io.alloc.bits.perf.get
+        }.otherwise {
+            perfTraceNext.sawDMT := ReqPerf.nextSawDMT(perfTraceReg.sawDMT, readTaskFire, taskReg.task.doDMT)
+            perfTraceNext.sawDCT := ReqPerf.nextSawDCT(perfTraceReg.sawDCT, cmRespHit, dctRespHit)
+            when(io.cleanPoS.fire) {
+                perfTraceNext.valid := false.B
+            }
+        }
+
+        when(allocHit | valid | XCBWrDataHit) {
+            perfTraceReg := perfTraceNext
+        }
+
+        val completed = io.reqPerfComplete.get
+        completed.valid             := io.cleanPoS.fire && perfTraceReg.valid
+        completed.bits.trace        := perfTraceReg
+        completed.bits.totalLatency := GTimer() - perfTraceReg.ingressCycle
+    }
+
     when(allocHit | io.decListIn.valid) {
         val alloc            = io.alloc.bits
         val task             = Mux(io.decListIn.valid, taskNext.task, alloc.task)
@@ -510,6 +539,82 @@ class Commit(implicit p: Parameters) extends DJModule {
                 ("zj_sf_direct_alloc_commit", io.replTask.fire && io.replTask.bits.isDirectAllocSF)
             )
         )
+    }
+
+    ZJPerf.whenEnabled {
+        val completions = entries.map(_.io.reqPerfComplete.get)
+        val completeVec = VecInit(completions.map(_.valid))
+        val completed   = completeVec.asUInt.orR
+        val sample      = WireInit(0.U.asTypeOf(new ReqPerfSample))
+        when(completed) {
+            sample := Mux1H(completeVec, completions.map(_.bits))
+        }
+        HAssert(PopCount(completeVec) <= 1.U)
+
+        val family = sample.trace.family
+        val path   = ReqPerf.path(sample.trace.llcHit, sample.trace.sawDCT, sample.trace.sawDMT)
+
+        val isRead     = completed && family === ReqPerfFamily.READ
+        val isWrite    = completed && family === ReqPerfFamily.WRITE
+        val isPrefetch = completed && family === ReqPerfFamily.PREFETCH
+
+        val readHit     = isRead && path === ReqPerfPath.HIT
+        val readDCT     = isRead && path === ReqPerfPath.DCT
+        val readDMT     = isRead && path === ReqPerfPath.DMT
+        val readNonDMT  = isRead && path === ReqPerfPath.NON_DMT
+        val writeHit    = isWrite && path === ReqPerfPath.HIT
+        val writeDMT    = isWrite && path === ReqPerfPath.DMT
+        val writeDCT    = isWrite && path === ReqPerfPath.DCT
+        val writeNonDMT = isWrite && path === ReqPerfPath.NON_DMT
+        val pfHit       = isPrefetch && path === ReqPerfPath.HIT
+        val pfDMT       = isPrefetch && path === ReqPerfPath.DMT
+        val pfDCT       = isPrefetch && path === ReqPerfPath.DCT
+        val pfNonDMT    = isPrefetch && path === ReqPerfPath.NON_DMT
+
+        Seq(
+            "zj_hn_req_read_hit_total"             -> readHit,
+            "zj_hn_req_read_miss_dmt_total"        -> readDMT,
+            "zj_hn_req_read_miss_dct_total"        -> readDCT,
+            "zj_hn_req_read_miss_nondmt_total"     -> readNonDMT,
+            "zj_hn_req_write_hit_total"            -> writeHit,
+            "zj_hn_req_write_miss_nondmt_total"    -> writeNonDMT,
+            "zj_hn_req_prefetch_hit_total"         -> pfHit,
+            "zj_hn_req_prefetch_miss_nondmt_total" -> pfNonDMT
+        ).foreach { case (name, enable) =>
+            ZJPerf.distribution(name, sample.totalLatency, enable, ReqPerf.TotalLatencyRanges, includeMinMax = false)
+        }
+
+        val opcode          = sample.trace.opcode
+        val knownReadOpcode = opcode === ReadNoSnp || opcode === ReadOnce || opcode === ReadNotSharedDirty || opcode === ReadUnique
+        val knownWriteOpcode = opcode === WriteNoSnpPtl || opcode === WriteUniquePtl || opcode === WriteUniqueFull ||
+            opcode === WriteBackFull || opcode === WriteCleanFull || opcode === WriteEvictOrEvict
+
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_hn_req_opcode_readnosnp_completed", isRead && opcode === ReadNoSnp),
+                ("zj_hn_req_opcode_readonce_completed", isRead && opcode === ReadOnce),
+                ("zj_hn_req_opcode_readnsd_completed", isRead && opcode === ReadNotSharedDirty),
+                ("zj_hn_req_opcode_readunique_completed", isRead && opcode === ReadUnique),
+                ("zj_hn_req_opcode_writenosnpptl_completed", isWrite && opcode === WriteNoSnpPtl),
+                ("zj_hn_req_opcode_writeuniqueptl_completed", isWrite && opcode === WriteUniquePtl),
+                ("zj_hn_req_opcode_writeuniquefull_completed", isWrite && opcode === WriteUniqueFull),
+                ("zj_hn_req_opcode_writebackfull_completed", isWrite && opcode === WriteBackFull),
+                ("zj_hn_req_opcode_writecleanfull_completed", isWrite && opcode === WriteCleanFull),
+                ("zj_hn_req_opcode_writeevictorevict_completed", isWrite && opcode === WriteEvictOrEvict),
+                ("zj_hn_req_opcode_stashonceshared_completed", isPrefetch && opcode === StashOnceShared),
+                ("zj_hn_req_read_other_opcode_completed", isRead && !knownReadOpcode),
+                ("zj_hn_req_write_other_opcode_completed", isWrite && !knownWriteOpcode),
+                ("zj_hn_req_prefetch_other_opcode_completed", isPrefetch && opcode =/= StashOnceShared),
+                ("zj_hn_req_illegal_write_dmt_completed", writeDMT),
+                ("zj_hn_req_illegal_write_dct_completed", writeDCT),
+                ("zj_hn_req_illegal_prefetch_dmt_completed", pfDMT),
+                ("zj_hn_req_illegal_prefetch_dct_completed", pfDCT),
+                ("zj_hn_req_trace_dmt_dct_completed", completed && sample.trace.sawDMT && sample.trace.sawDCT)
+            )
+        )
+        HAssert.withEn(PopCount(Seq(readHit, readDCT, readDMT, readNonDMT)) === 1.U, isRead)
+        HAssert.withEn(PopCount(Seq(writeHit, writeDCT, writeDMT, writeNonDMT)) === 1.U, isWrite)
+        HAssert.withEn(PopCount(Seq(pfHit, pfDCT, pfDMT, pfNonDMT)) === 1.U, isPrefetch)
     }
 
     entries.grouped(nrCommit).zipWithIndex.foreach { case (e0, i) =>

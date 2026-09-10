@@ -59,6 +59,8 @@ class ReadEntry(implicit p: Parameters) extends DJModule {
 
         val updPosNest = if (hasBBN) Some(Decoupled(new PosCanNest)) else None
 
+        val serviceLatency = Option.when(ZJPerf.enabled)(Output(Valid(UInt(64.W))))
+
         val dbg = Valid(new ReadState with HasHnTxnID)
     })
 
@@ -188,6 +190,13 @@ class ReadEntry(implicit p: Parameters) extends DJModule {
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
 
+    ZJPerf.whenEnabled {
+        val serviceTracker = Module(new ServiceLatencyTracker)
+        serviceTracker.io.start  := io.alloc.fire
+        serviceTracker.io.finish := io.resp.fire
+        io.serviceLatency.get    := serviceTracker.io.sample
+    }
+
     HAssert.checkTimeout(reg.isFree, TIMEOUT_READ, cf"TIMEOUT: Read State[${reg.state}]")
 }
 
@@ -209,6 +218,14 @@ class ReadCM(implicit p: Parameters) extends DJModule {
     val entries = Seq.fill(nrReadCM) { Module(new ReadEntry()) }
     val dbgVec  = VecInit(entries.map(_.io.dbg))
     dontTouch(dbgVec)
+
+    ZJPerf.whenEnabled {
+        ReqPerf.aggregateDistribution(
+            "zj_hn_readcm_service_latency",
+            entries.map(_.io.serviceLatency.get),
+            ReqPerf.LocalLatencyRanges
+        )
+    }
 
     entries.foreach(_.io.config := io.config)
     Alloc(entries.map(_.io.alloc), io.alloc)

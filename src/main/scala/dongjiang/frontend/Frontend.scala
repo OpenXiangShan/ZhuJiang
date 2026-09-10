@@ -13,9 +13,27 @@ import xs.utils.debug._
 import dongjiang.directory.{DirEntry, DirMsg, PackDirMsg}
 import dongjiang.frontend.decode.{CommitCode, Operations}
 import xs.utils.queue.FastQueue
+import xs.utils.GTimer
+import zhujiang.perf.ZJPerf
 
 class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
     override def isTopModule: Boolean = isTop
+
+    private def bufferReqWithIngressCycle(rxReq: DecoupledIO[ReqFlit]): DecoupledIO[TimedReqFlit] = {
+        val timedReq = Wire(Decoupled(new TimedReqFlit))
+        timedReq.valid             := rxReq.valid
+        timedReq.bits.req          := rxReq.bits
+        timedReq.bits.ingressCycle := GTimer()
+        rxReq.ready                := timedReq.ready
+        FastQueue(timedReq)
+    }
+
+    private def connectTimedReq(timedReq: DecoupledIO[TimedReqFlit], reqToTask: ReqToChiTask): Unit = {
+        reqToTask.io.rxReq.valid          := timedReq.valid
+        reqToTask.io.rxReq.bits           := timedReq.bits.req
+        timedReq.ready                    := reqToTask.io.rxReq.ready
+        reqToTask.io.perfIngressCycle.get := timedReq.bits.ingressCycle
+    }
 
     val io = IO(new Bundle {
 
@@ -89,9 +107,13 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
     io.working       := hprTaskBuf.io.working | reqTaskBuf.io.working | snpTaskBuf.map(_.io.working).getOrElse(false.B) | posTable.io.working
     HAssert.withEn(io.cleanDB.ready, io.cleanDB.valid)
 
-    hpr2Task.io.rxReq <> FastQueue(io.rxHpr)
-
-    req2Task.io.rxReq <> FastQueue(io.rxReq)
+    if (ZJPerf.enabled) {
+        connectTimedReq(bufferReqWithIngressCycle(io.rxHpr), hpr2Task)
+        connectTimedReq(bufferReqWithIngressCycle(io.rxReq), req2Task)
+    } else {
+        hpr2Task.io.rxReq <> FastQueue(io.rxHpr)
+        req2Task.io.rxReq <> FastQueue(io.rxReq)
+    }
 
     hprTaskBuf.io.chiTaskIn <> hpr2Task.io.chiTask
     hprTaskBuf.io.retry_s1  := block.io.retry_s1

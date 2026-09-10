@@ -61,6 +61,8 @@ class WriteEntry(implicit p: Parameters) extends DJModule {
 
         val updPosNest = if (hasBBN) Some(Decoupled(new PosCanNest)) else None
 
+        val serviceLatency = Option.when(ZJPerf.enabled)(Output(Valid(UInt(64.W))))
+
         val dbg = Valid(new ReadState with HasHnTxnID)
     })
 
@@ -108,8 +110,7 @@ class WriteEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.bits.txDat.SrcID  := reg.task.chi.getNoC
     io.dataTask.bits.txDat.TgtID  := reg.task.chi.nodeId
     io.dataTask.bits.qos          := reg.task.qos
-
-    io.resp.valid := reg.isRespCmt
+    io.resp.valid                 := reg.isRespCmt
 
     io.resp.bits                := DontCare
     io.resp.bits.hnTxnID        := reg.task.hnTxnID
@@ -182,6 +183,13 @@ class WriteEntry(implicit p: Parameters) extends DJModule {
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
 
+    ZJPerf.whenEnabled {
+        val serviceTracker = Module(new ServiceLatencyTracker)
+        serviceTracker.io.start  := io.alloc.fire
+        serviceTracker.io.finish := io.resp.fire
+        io.serviceLatency.get    := serviceTracker.io.sample
+    }
+
     HardwareAssertion.checkTimeout(reg.isFree, TIMEOUT_WRITE, cf"TIMEOUT: Write State[${reg.state}]")
 }
 
@@ -205,6 +213,14 @@ class WriteCM(implicit p: Parameters) extends DJModule {
     val entries = Seq.fill(nrWriteCM) { Module(new WriteEntry()) }
     val dbgVec  = VecInit(entries.map(_.io.dbg))
     dontTouch(dbgVec)
+
+    ZJPerf.whenEnabled {
+        ReqPerf.aggregateDistribution(
+            "zj_hn_writecm_service_latency",
+            entries.map(_.io.serviceLatency.get),
+            ReqPerf.LocalLatencyRanges
+        )
+    }
 
     Alloc(entries.map(_.io.alloc), io.alloc)
     entries.foreach(_.io.config := io.config)
