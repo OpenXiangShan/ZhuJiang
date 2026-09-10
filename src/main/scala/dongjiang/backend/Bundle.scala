@@ -15,6 +15,7 @@ import dongjiang.data._
 import zhujiang.chi.ReqOpcode._
 import dongjiang.frontend._
 import dongjiang.frontend.decode._
+import zhujiang.perf.ZJPerf
 
 class CommitTask(implicit p: Parameters) extends DJBundle with HasPackChi with HasPackDirMsg with HasAlready with HasDsIdx with HasDecList with HasPackTaskCode with HasPackCmtCode with HasQoS {
     def isReplLLC = cmt.wriLLC & !dir.llc.hit
@@ -43,6 +44,16 @@ class ReplTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with Has
     def isReplSF = wriSF & !dir.sf.hit & !directAllocSF
     def isReplLLC = wriLLC & !dir.llc.hit
     def isReplDIR = isReplSF | isReplLLC
+}
+
+class SFWritePerf(implicit p: Parameters) extends DJBundle {
+    val commit        = Bool()
+    val sfHit         = Bool()
+    val sfMiss        = Bool()
+    val srcHit        = Bool()
+    val othHit        = Bool()
+    val noSrcOrOthHit = Bool()
+    val allocCommit   = Bool()
 }
 
 class UpdHnTxnID(implicit p: Parameters) extends DJBundle {

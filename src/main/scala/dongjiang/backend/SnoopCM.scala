@@ -15,6 +15,7 @@ import zhujiang.chi.DatOpcode._
 import zhujiang.chi.RspOpcode._
 import zhujiang.chi.SnpOpcode._
 import zhujiang.chi._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 
 object SnpState {
     val width    = 3
@@ -247,6 +248,23 @@ class SnoopCM(implicit p: Parameters) extends DJModule {
 
     io.txSnp <> fastQosRRArb(entries.map(_.io.txSnp))
     io.resp  <> fastQosRRArb(entries.map(_.io.resp))
+
+    ZJPerf.whenEnabled {
+        val occupancy = PopCount(entries.map(_.io.dbg.valid))
+        val full      = occupancy === nrSnoopCM.U
+        ZJPerf.accumulate(
+            Seq(
+                "zj_hn_snoopcm_alloc_fire"       -> io.alloc.fire,
+                "zj_hn_snoopcm_alloc_full_stall" -> (io.alloc.valid && full)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_hn_snoopcm_occupancy",
+            occupancy,
+            true.B,
+            HistogramRange.occupancy(nrSnoopCM)
+        )
+    }
 
     HardwareAssertion.placePipe(1)
 }

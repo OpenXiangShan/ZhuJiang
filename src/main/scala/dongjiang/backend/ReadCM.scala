@@ -14,6 +14,7 @@ import xs.utils.debug._
 import zhujiang.chi.DatOpcode._
 import zhujiang.chi.RspOpcode._
 import zhujiang.chi._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 
 object ReadState {
     val width     = 3
@@ -218,6 +219,23 @@ class ReadCM(implicit p: Parameters) extends DJModule {
     if (hasBBN) {
         io.txRsp.get      <> fastQosRRArb(entries.map(_.io.txRsp.get))
         io.updPosNest.get <> fastQosRRArb(entries.map(_.io.updPosNest.get))
+    }
+
+    ZJPerf.whenEnabled {
+        val occupancy = PopCount(entries.map(_.io.dbg.valid))
+        val full      = occupancy === nrReadCM.U
+        ZJPerf.accumulate(
+            Seq(
+                "zj_hn_readcm_alloc_fire"       -> io.alloc.fire,
+                "zj_hn_readcm_alloc_full_stall" -> (io.alloc.valid && full)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_hn_readcm_occupancy",
+            occupancy,
+            true.B,
+            HistogramRange.occupancy(nrReadCM)
+        )
     }
 
     HardwareAssertion.placePipe(1)

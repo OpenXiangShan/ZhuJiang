@@ -9,6 +9,7 @@ import dongjiang.backend.UpdHnTxnID
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import xs.utils.queue.FastQueue
 import dongjiang.data.CTRLSTATE._
 import chisel3.experimental.BundleLiterals._
@@ -322,6 +323,14 @@ class DataCtrlEntry(implicit p: Parameters) extends DJModule {
     val set = io.alloc.fire | reg.isValid; dontTouch(set)
     when(set) { reg := next }
 
+    ZJPerf.accumulate(
+        Seq(
+            ("zj_datactrl_alloc_fire", io.alloc.fire),
+            ("zj_datactrl_resp_fire", io.resp.fire),
+            ("zj_datactrl_release_fire", io.release.fire)
+        )
+    )
+
     HAssert.checkTimeout(reg.isFree | updHnTxnIDHit, TIMEOUT_DATACM, cf"TIMEOUT: DataCM State[${reg.state}]")
 }
 
@@ -368,6 +377,7 @@ class DataCM(implicit p: Parameters) extends DJModule {
     val taskReg     = RegEnable(io.task.bits, io.task.fire)
     val dbgVec      = VecInit(entries.map(_.io.state))
     dontTouch(dbgVec)
+
     dbgVec.zipWithIndex.foreach { case (src, i) =>
         dbgVec.zipWithIndex.foreach { case (sink, j) =>
             HAssert.withEn(!(src.bits.hnTxnID === sink.bits.hnTxnID), src.valid & sink.valid & i.U =/= j.U)
@@ -458,6 +468,34 @@ class DataCM(implicit p: Parameters) extends DJModule {
     }
 
     connectReadToX(VecInit(entries.map(_.io.readToCHI)), io.readToCHI)
+
+    ZJPerf.whenEnabled {
+        val noFreeDcid    = io.reqDBIn.valid && !hasFreeDC
+        val reqDBOutStall = io.reqDBIn.valid && hasFreeDC && !io.reqDBOut.ready
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_datacm_req_db_in_fire", io.reqDBIn.fire),
+                ("zj_datacm_no_free_dcid", noFreeDcid),
+                ("zj_datacm_req_db_out_stall", reqDBOutStall),
+                ("zj_datacm_read_to_db_fire", io.readToDB.fire),
+                ("zj_datacm_read_to_db_stall", io.readToDB.valid && !io.readToDB.ready),
+                ("zj_datacm_read_to_ds_fire", io.readToDS.fire),
+                ("zj_datacm_read_to_ds_stall", io.readToDS.valid && !io.readToDS.ready),
+                ("zj_datacm_read_to_chi_fire", io.readToCHI.fire),
+                ("zj_datacm_read_to_chi_stall", io.readToCHI.valid && !io.readToCHI.ready)
+            )
+        )
+    }
+
+    ZJPerf.whenEnabled {
+        val validDcidCount = PopCount(entries.map(_.io.state.valid))
+        ZJPerf.distribution(
+            "zj_datacm_valid_dcid",
+            validDcidCount,
+            true.B,
+            HistogramRange.occupancy(nrDataCM)
+        )
+    }
 
     HAssert(!(RegNext(io.readToDB.fire) ^ (PopCount(entries.map(e => RegNext(e.io.readToDB.fire))) === 1.U)))
     HAssert(!(RegNext(io.readToDS.fire) ^ (PopCount(entries.map(e => RegNext(e.io.readToDS.fire))) === 1.U)))

@@ -14,6 +14,7 @@ import xs.utils.debug._
 import zhujiang.chi.DatOpcode._
 import zhujiang.chi.RspOpcode._
 import zhujiang.chi._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 
 object WriteState {
     val width    = 3
@@ -215,6 +216,23 @@ class WriteCM(implicit p: Parameters) extends DJModule {
     io.dataTask <> fastQosRRArb(entries.map(_.io.dataTask))
     if (hasBBN) {
         io.updPosNest.get <> fastQosRRArb(entries.map(_.io.updPosNest.get))
+    }
+
+    ZJPerf.whenEnabled {
+        val occupancy = PopCount(entries.map(_.io.dbg.valid))
+        val full      = occupancy === nrWriteCM.U
+        ZJPerf.accumulate(
+            Seq(
+                "zj_hn_writecm_alloc_fire"       -> io.alloc.fire,
+                "zj_hn_writecm_alloc_full_stall" -> (io.alloc.valid && full)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_hn_writecm_occupancy",
+            occupancy,
+            true.B,
+            HistogramRange.occupancy(nrWriteCM)
+        )
     }
 
     HardwareAssertion.placePipe(1)

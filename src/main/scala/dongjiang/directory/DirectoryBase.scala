@@ -9,6 +9,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug.{HAssert, HardwareAssertion}
+import zhujiang.perf.ZJPerf
 import xs.utils.sram.{DualPortSramTemplate, SinglePortSramTemplate}
 import freechips.rocketchip.util.ReplacementPolicy
 import xs.utils.mbist.MbistPipeline
@@ -455,6 +456,21 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     HAssert.withEn(io.write.bits.metaIsVal, io.write.valid && io.write.bits.directAlloc)
     if (dirType == "sf") {
         HAssert.withEn(directAllocOwnerMatch_d0, io.write.valid && io.write.bits.directAlloc)
+    }
+
+    ZJPerf.whenEnabled {
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_dirbase_read_fire", io.read.fire),
+                ("zj_dirbase_read_stall", io.read.valid && !io.read.ready),
+                ("zj_dirbase_write_fire", io.write.fire),
+                ("zj_dirbase_write_stall", io.write.valid && !io.write.ready),
+                ("zj_dirbase_d3_read_miss", read_d3 && !hit_d3),
+                ("zj_dirbase_d3_read_hit", read_d3 && hit_d3),
+                (s"zj_dirbase_${dirType}_d3_read_repl", readRepl_d3),
+                (s"zj_dirbase_${dirType}_direct_alloc_fire", writeDirectAlloc_d0)
+            )
+        )
     }
 
     HardwareAssertion.placePipe(1)

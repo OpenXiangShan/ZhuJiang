@@ -14,6 +14,7 @@ import dongjiang.utils._
 import org.chipsalliance.cde.config._
 import xs.utils.arb.VipArbiter
 import xs.utils.debug._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import zhujiang.chi.ReqOpcode._
 import zhujiang.chi._
 
@@ -389,6 +390,19 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         reg.state := next.state
     }
 
+    ZJPerf.whenEnabled {
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_repl_req_pos_fire", io.reqPoS.fire),
+                ("zj_repl_req_pos_stall", io.reqPoS.valid && !io.reqPoS.ready),
+                ("zj_repl_write_dir_fire", io.writeDir.fire),
+                ("zj_repl_write_dir_stall", io.writeDir.valid && !io.writeDir.ready),
+                ("zj_repl_req_db_fire", io.reqDB.fire),
+                ("zj_repl_req_db_stall", io.reqDB.valid && !io.reqDB.ready)
+            )
+        )
+    }
+
     HAssert.checkTimeout(reg.isFree, TIMEOUT_REPLACE, cf"TIMEOUT: Replace State[${reg.state}]")
 }
 
@@ -426,6 +440,23 @@ class ReplaceCM(implicit p: Parameters) extends DJModule {
     })
 
     val entries = Seq.fill(nrReplaceCM) { Module(new ReplaceEntry()) }
+
+    ZJPerf.whenEnabled {
+        val occupancy = PopCount(entries.map(_.io.dbg.valid))
+        val full      = occupancy === nrReplaceCM.U
+        ZJPerf.accumulate(
+            Seq(
+                "zj_hn_replacecm_alloc_fire"       -> io.task.fire,
+                "zj_hn_replacecm_alloc_full_stall" -> (io.task.valid && full)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_hn_replacecm_occupancy",
+            occupancy,
+            true.B,
+            HistogramRange.occupancy(nrReplaceCM)
+        )
+    }
 
     Alloc(entries.map(_.io.alloc), io.task)
 
