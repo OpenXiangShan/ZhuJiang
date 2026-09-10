@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import dongjiang.frontend.TaskState._
 import chisel3.experimental.BundleLiterals._
 
@@ -163,6 +164,27 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8)(implicit p: Pa
     }
 
     io.working := Cat(entries.map(_.io.state.valid)).orR
+
+    ZJPerf.whenEnabled {
+        val validEntryCount = PopCount(entries.map(_.io.state.valid))
+        val waitEntryCount  = PopCount(entries.map(_.io.state.value === WAIT))
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_taskbuf_input_fire", io.chiTaskIn.fire),
+                ("zj_taskbuf_input_stall", io.chiTaskIn.valid && !io.chiTaskIn.ready),
+                ("zj_taskbuf_output_fire", io.chiTask_s0.fire),
+                ("zj_taskbuf_output_stall", io.chiTask_s0.valid && !io.chiTask_s0.ready),
+                ("zj_taskbuf_lock_cycle", io.lockTask)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_taskbuf_valid_entries",
+            validEntryCount,
+            true.B,
+            HistogramRange.occupancy(entries.size)
+        )
+        ZJPerf.max("zj_taskbuf_wait_entries", waitEntryCount, true.B)
+    }
 
     HAssert.placePipe(1)
 }

@@ -18,7 +18,7 @@ import xs.utils.debug.HardwareAssertion
 import xs.utils.sram.SramPowerCtl
 import zhujiang.ZJParametersKey
 import zhujiang.utils.SramPwrCtlBoring
-import xs.utils.perf.XSPerfAccumulate
+import zhujiang.perf.ZJPerf
 import xs.utils.FileRegisters
 
 class DJConfigIO(implicit p: Parameters) extends DJBundle {
@@ -173,15 +173,33 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
     SramPwrCtlBoring.getSrc() := io.ramPwrCtl
     HardwareAssertion.placePipe(3)
 
-    var xsPerfSeq = Seq(
-        ("hn_lan_rx_req", io.lan.rx.req.get.fire),
-        ("hn_lan_tx_req", io.lan.tx.req.get.fire),
-        ("hn_lan_rx_dat", io.lan.rx.data.get.fire),
-        ("hn_lan_tx_dat", io.lan.tx.data.get.fire),
-        ("hn_lan_rx_rsp", io.lan.rx.resp.get.fire),
-        ("hn_lan_tx_rsp", io.lan.tx.resp.get.fire),
-        ("hn_lan_tx_snp", io.lan.tx.snoop.get.fire)
-    )
-    if (hasHPR) xsPerfSeq = xsPerfSeq ++ Seq(("hn_lan_rx_hpr", io.lan.rx.hpr.get.fire))
-    XSPerfAccumulate(xsPerfSeq)
+    ZJPerf.whenEnabled {
+        val hnIngressStall    = io.lan.rx.bundleMap.values.map(ch => ch.valid && !ch.ready).reduce(_ || _)
+        val hnEgressStall     = io.lan.tx.bundleMap.values.map(ch => ch.valid && !ch.ready).reduce(_ || _)
+        val hnTopDownPressure = hnIngressStall || hnEgressStall
+        var xsPerfSeq = Seq(
+            ("zj_hn_lan_rx_req_fire", io.lan.rx.req.get.fire),
+            ("zj_hn_lan_rx_req_stall", io.lan.rx.req.get.valid && !io.lan.rx.req.get.ready),
+            ("zj_hn_lan_rx_dat_fire", io.lan.rx.data.get.fire),
+            ("zj_hn_lan_rx_dat_stall", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready),
+            ("zj_hn_lan_rx_rsp_fire", io.lan.rx.resp.get.fire),
+            ("zj_hn_lan_rx_rsp_stall", io.lan.rx.resp.get.valid && !io.lan.rx.resp.get.ready),
+            ("zj_hn_lan_tx_req_fire", io.lan.tx.req.get.fire),
+            ("zj_hn_lan_tx_req_stall", io.lan.tx.req.get.valid && !io.lan.tx.req.get.ready),
+            ("zj_hn_lan_tx_dat_fire", io.lan.tx.data.get.fire),
+            ("zj_hn_lan_tx_dat_stall", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready),
+            ("zj_hn_lan_tx_rsp_fire", io.lan.tx.resp.get.fire),
+            ("zj_hn_lan_tx_rsp_stall", io.lan.tx.resp.get.valid && !io.lan.tx.resp.get.ready),
+            ("zj_hn_lan_tx_snp_fire", io.lan.tx.snoop.get.fire),
+            ("zj_hn_lan_tx_snp_stall", io.lan.tx.snoop.get.valid && !io.lan.tx.snoop.get.ready),
+            ("zj_hn_topdown_pressure_cycle", hnTopDownPressure)
+        )
+        if (hasHPR) {
+            xsPerfSeq = xsPerfSeq ++ Seq(
+                ("zj_hn_lan_rx_hpr_fire", io.lan.rx.hpr.get.fire),
+                ("zj_hn_lan_rx_hpr_stall", io.lan.rx.hpr.get.valid && !io.lan.rx.hpr.get.ready)
+            )
+        }
+        ZJPerf.accumulate(xsPerfSeq)
+    }
 }

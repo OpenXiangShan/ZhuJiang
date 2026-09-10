@@ -34,6 +34,16 @@ case class HistogramRange(start: Int, stop: Int, step: Int) {
 }
 
 object HistogramRange {
+    def occupancy(capacity: Int): Seq[HistogramRange] = {
+        require(capacity > 0)
+        val edges = Seq(0, 1, 2, 4, 8, 16, 32, 64, 128, 256)
+        edges.sliding(2).toSeq.collect {
+            case Seq(start, stop) if start < capacity =>
+                val actualStop = stop.min(capacity)
+                HistogramRange(start, actualStop, actualStop - start)
+        } :+ HistogramRange(capacity, capacity + 1, 1)
+    }
+
     private[perf] def validate(ranges: Seq[HistogramRange]): Unit = {
         require(ranges.nonEmpty, "histogram ranges must be non-empty")
         ranges.sliding(2).foreach {

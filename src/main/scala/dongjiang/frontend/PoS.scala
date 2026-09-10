@@ -8,6 +8,7 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import chisel3.experimental.BundleLiterals._
 
 class PosState(implicit p: Parameters) extends DJBundle {
@@ -237,6 +238,31 @@ class PosSet(implicit p: Parameters) extends DJModule {
     HAssert(PopCount(entries.map(_.io.wakeup.valid)) <= 1.U)
     HAssert.withEn(!VecInit(esVec.map(es => es.valid & es.tagVal & es.addr === allocReg_s1.bits.addr)).asUInt.orR, allocReg_s1.valid)
     HAssert.withEn(!VecInit(esVec.map(es => es.valid & es.tagVal & es.addr === io.updTag.bits.addr)).asUInt.orR, io.updTag.valid & io.updTag.bits.addrVal)
+
+    ZJPerf.whenEnabled {
+        val blockNoFree = io.alloc_s0.valid && !hasMatTag && !hasFree_s0
+        val blockMatTag = io.alloc_s0.valid && hasMatTag && (
+            io.alloc_s0.bits.isReq || (io.alloc_s0.bits.isSnp && !canNest_s0)
+        )
+        val blockMatchS1 = io.alloc_s0.valid && matchReqS1_s0
+        val blockLock    = io.alloc_s0.valid && lockReg
+        val blockReqPoS  = io.alloc_s0.valid && io.reqPoS.valid
+        val reqPoSBlock  = io.reqPoS.valid && (!freeVec(replSelWay) || lockReg)
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_pos_set_alloc_fire", allocReg_s1.valid && !io.retry_s1),
+                ("zj_pos_set_alloc_retry", allocReg_s1.valid && io.retry_s1),
+                ("zj_pos_set_block", io.alloc_s0.valid && block_s0),
+                ("zj_pos_set_block_no_free", blockNoFree),
+                ("zj_pos_set_block_mat_tag", blockMatTag),
+                ("zj_pos_set_block_match_s1", blockMatchS1),
+                ("zj_pos_set_block_lock", blockLock),
+                ("zj_pos_set_block_req_pos", blockReqPoS),
+                ("zj_pos_set_req_pos_fire", reqPosFire),
+                ("zj_pos_set_req_pos_block", reqPoSBlock)
+            )
+        )
+    }
 }
 
 class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
@@ -309,6 +335,13 @@ class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
     dontTouch(addrVec2)
 
     io.working := Cat(sets.flatMap(_.io.stateVec.map(_.valid))).orR
+
+    ZJPerf.distribution(
+        "zj_pos_table_occupancy",
+        io.alrUsePoS,
+        true.B,
+        HistogramRange.occupancy(nrPoS)
+    )
 
     HAssert.placePipe(1)
 }
