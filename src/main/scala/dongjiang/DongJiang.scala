@@ -14,6 +14,7 @@ import xijiang._
 import xijiang.router.base.DeviceIcnBundle
 import zhujiang.chi.FlitHelper.connIcn
 import dongjiang.frontend.decode.Decode._
+import dongjiang.prefetch.HnPBestOffsetPrefetch
 import xs.utils.debug.HardwareAssertion
 import xs.utils.sram.SramPowerCtl
 import zhujiang.ZJParametersKey
@@ -95,7 +96,39 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
     directory.io.config := io.config
     backend.io.config   := io.config
 
-    chiXbar.io.rxReq.inVec.zip(icnVec.map(_.rx.req.get)).foreach { case (a, b) => connIcn(a, b) }
+    val hnPbop = Module(new HnPBestOffsetPrefetch())
+    hnPbop.io.enable := true.B
+    hnPbop.io.bankId := io.config.bankId
+
+    val rxReqFromIcn = Wire(Vec(nrIcn, Decoupled(new ReqFlit(false))))
+    rxReqFromIcn.zip(icnVec.map(_.rx.req.get)).foreach { case (a, b) => connIcn(a, b) }
+
+    val demandTrainSel = VecInit(rxReqFromIcn.map { req =>
+        val opcode = req.bits.Opcode
+        req.valid && (
+            opcode === ReqOpcode.ReadNotSharedDirty ||
+            opcode === ReqOpcode.ReadUnique ||
+            opcode === ReqOpcode.ReadShared ||
+            opcode === ReqOpcode.ReadClean ||
+            opcode === ReqOpcode.ReadOnce
+        )
+    })
+    val demandTrainOH = PriorityEncoderOH(demandTrainSel)
+    val pbopTrainBuf = Module(new Queue(UInt(addrBits.W), entries = 4))
+    pbopTrainBuf.io.enq.valid := demandTrainSel.asUInt.orR
+    pbopTrainBuf.io.enq.bits := Mux1H(demandTrainOH, rxReqFromIcn.map(_.bits.Addr))
+    hnPbop.io.train <> pbopTrainBuf.io.deq
+
+    val rxReqToXbar = Wire(Vec(nrIcn, Decoupled(new ReqFlit(false))))
+    rxReqToXbar.zipWithIndex.foreach { case (out, i) =>
+        val injectHere = (i == 0).B
+        val takePbop = injectHere && hnPbop.io.req.valid && !rxReqFromIcn(i).valid
+        out.valid := Mux(takePbop, hnPbop.io.req.valid, rxReqFromIcn(i).valid)
+        out.bits := Mux(takePbop, hnPbop.io.req.bits, rxReqFromIcn(i).bits)
+        rxReqFromIcn(i).ready := Mux(takePbop, false.B, out.ready)
+    }
+    hnPbop.io.req.ready := rxReqToXbar.head.ready && !rxReqFromIcn.head.valid
+    chiXbar.io.rxReq.inVec.zip(rxReqToXbar).foreach { case (a, b) => a <> b }
     chiXbar.io.rxReq.outVec.zip(frontends.map(_.io.rxReq)).foreach { case (a, b) => a <> b }
 
     if (hasHPR) {
@@ -180,6 +213,9 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
         var xsPerfSeq = Seq(
             ("zj_hn_lan_rx_req_fire", io.lan.rx.req.get.fire),
             ("zj_hn_lan_rx_req_stall", io.lan.rx.req.get.valid && !io.lan.rx.req.get.ready),
+            ("zj_hn_pbop_train", hnPbop.io.train.fire),
+            ("zj_hn_pbop_req", hnPbop.io.req.fire),
+            ("zj_hn_pbop_req_stall", hnPbop.io.req.valid && !hnPbop.io.req.ready),
             ("zj_hn_lan_rx_dat_fire", io.lan.rx.data.get.fire),
             ("zj_hn_lan_rx_dat_stall", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready),
             ("zj_hn_lan_rx_rsp_fire", io.lan.rx.resp.get.fire),
