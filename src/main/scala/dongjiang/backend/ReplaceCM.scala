@@ -405,7 +405,8 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
                 ("zj_repl_write_dir_fire", io.writeDir.fire),
                 ("zj_repl_write_dir_stall", io.writeDir.valid && !io.writeDir.ready),
                 ("zj_repl_req_db_fire", io.reqDB.fire),
-                ("zj_repl_req_db_stall", io.reqDB.valid && !io.reqDB.ready)
+                ("zj_repl_req_db_stall", io.reqDB.valid && !io.reqDB.ready),
+                ("zj_sf_repl_snpunique_fire", io.cmTaskVec(CMID.SNP).fire)
             )
         )
     }

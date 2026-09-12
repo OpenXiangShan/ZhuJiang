@@ -375,8 +375,10 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
         flagNext.intl.w.replResp := flagNext.intl.s.wriDir
         flagNext.intl.w.dataResp := flagNext.intl.s.dataTask | alrSendData
 
+        val chiForCmt = Mux(io.decListIn.valid, taskReg.chi, alloc.chi)
+        val dropInternalStashComp = chiForCmt.reqIs(StashOnceShared) && !chiForCmt.fromRn
         flagNext.chi.s.dbid := allocHit & alloc.task.returnDBID & !alloc.alr.sDBID
-        flagNext.chi.s.resp := cmt.sendResp & cmt.channel === ChiChannel.RSP
+        flagNext.chi.s.resp := cmt.sendResp & cmt.channel === ChiChannel.RSP & !dropInternalStashComp
 
         flagNext.chi.w.xCBWrData0 := needWaitData & alloc.chi.dataVec(0) & !XCBWrDataHit0 & !alrGetReg.NCBWrD0
         flagNext.chi.w.xCBWrData1 := needWaitData & alloc.chi.dataVec(1) & !XCBWrDataHit1 & !alrGetReg.NCBWrD1

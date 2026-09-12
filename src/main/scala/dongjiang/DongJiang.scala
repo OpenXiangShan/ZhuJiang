@@ -105,7 +105,7 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
 
     val demandTrainSel = VecInit(rxReqFromIcn.map { req =>
         val opcode = req.bits.Opcode
-        req.valid && (
+        req.fire && (
             opcode === ReqOpcode.ReadNotSharedDirty ||
             opcode === ReqOpcode.ReadUnique ||
             opcode === ReqOpcode.ReadShared ||
