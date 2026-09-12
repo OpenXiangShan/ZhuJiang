@@ -37,6 +37,8 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
     private def rspSelFunc(self: RespFlit, other: RespFlit): Bool = self.QoS >= other.QoS
     private val icnRspArb = Module(new ConditionVipArbiter(new RespFlit, node.outstanding, rspSelFunc))
     connIcn(icn.tx.resp.get, icnRspArb.io.out)
+    // Occupancy is computed after the CM array is built; drive CBusy from this wire.
+    private val snCBusy = Wire(UInt(3.W))
 
     private def axSelFunc(self: AXFlit, other: AXFlit): Bool = self.qos >= other.qos
     private val awArb = Module(new ConditionVipArbiter(new AXFlit(axiParams), node.outstanding, axSelFunc))
@@ -62,6 +64,7 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
         cm.io.idx                          := idx.U
         icnRspArb.io.in(idx).valid         := cm.icn.tx.resp.valid
         icnRspArb.io.in(idx).bits          := cm.icn.tx.resp.bits.asTypeOf(icn.tx.resp.get.bits.cloneType)
+        icnRspArb.io.in(idx).bits.CBusy    := snCBusy
         cm.icn.tx.resp.ready               := icnRspArb.io.in(idx).ready
         awArb.io.in(idx)                   <> cm.axi.aw
         arArb.io.in(idx)                   <> cm.axi.ar
@@ -99,6 +102,17 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
 
     private val busyEntries = cms.map(_.io.info.valid)
     private val enqCtrl     = PickOneLow(busyEntries)
+    // CHI E.b CBusy uses the same 4-level occupancy encoding as HN PoS:
+    // 0: <50%, 1: <75%, 2: <90%, 3: >=90%.
+    private val busyCmCount = PopCount(busyEntries)
+    snCBusy := PriorityMux(
+        Seq(
+            (busyCmCount < (node.outstanding * 0.5).toInt.U)  -> 0.U(3.W),
+            (busyCmCount < (node.outstanding * 0.75).toInt.U) -> 1.U(3.W),
+            (busyCmCount < (node.outstanding * 0.9).toInt.U)  -> 2.U(3.W),
+            true.B                                            -> 3.U(3.W)
+        )
+    )
 
     icn.rx.req.get.ready := enqCtrl.valid
     axi.b.ready          := true.B
@@ -143,12 +157,12 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
     readDataPipe.io.enq.bits.Resp    := "b010".U
     readDataPipe.io.enq.bits.RespErr := axi.r.bits.resp
     readDataPipe.io.enq.bits.QoS     := ctrlSel.qos
+    readDataPipe.io.enq.bits.CBusy   := snCBusy
     readDataPipe.io.enq.bits.BE      := Mux(ctrlSel.size === 6.U, Fill(bew, true.B), MaskGen(ctrlSel.addr, ctrlSel.size, bew))
 
     connIcn(icn.tx.data.get, readDataPipe.io.deq)
 
     ZJPerf.whenEnabled {
-        val busyCmCount       = PopCount(busyEntries)
         val cycleTick         = RegInit(0.U(32.W))
         val arIssueTickVec    = Reg(Vec(node.outstanding, UInt(32.W)))
         val awIssueTickVec    = Reg(Vec(node.outstanding, UInt(32.W)))
