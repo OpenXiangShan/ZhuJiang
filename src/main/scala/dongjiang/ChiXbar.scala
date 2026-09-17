@@ -129,11 +129,7 @@ class ChiXbar(implicit p: Parameters) extends DJModule {
         io.txDat.outVec.foreach(_.bits := io.txDat.in.bits)
     }
 
-    io.txReq.outVec.foreach(_.bits.SrcID := 0.U)
-    io.txSnp.outVec.foreach(_.bits.SrcID := 0.U)
-    io.txRsp.outVec.foreach(_.bits.SrcID := 0.U)
-    io.txDat.outVec.foreach(_.bits.SrcID := 0.U)
-
+    // Keep backend SrcID. HomeWrapper overwrites it with the real HN NID.
     io.txRsp.outVec.foreach(_.bits.CBusy := io.cBusy)
     io.txDat.outVec.foreach(_.bits.CBusy := io.cBusy)
 }

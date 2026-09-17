@@ -141,7 +141,7 @@ abstract class BaseCtrlMachine[
     icn.tx.resp.bits.QoS   := payload.info.qos
     icn.tx.resp.bits.DBID  := io.idx
     icn.tx.resp.bits.TxnID := Mux(icnDBID && dwt, payload.info.returnTxnId.getOrElse(0.U), payload.info.txnId)
-    icn.tx.resp.bits.SrcID := 0.U
+    icn.tx.resp.bits.SrcID := node.nodeId.U
     icn.tx.resp.bits.TgtID := Mux(icnDBID && dwt, payload.info.returnNid.getOrElse(0.U), payload.info.srcId)
     icn.tx.resp.bits.Resp  := "b000".U
     icn.tx.resp.bits.CBusy := 0.U

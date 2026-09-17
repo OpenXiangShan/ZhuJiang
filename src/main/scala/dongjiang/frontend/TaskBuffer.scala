@@ -39,6 +39,7 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
 
         val chiTaskIn  = Flipped(Decoupled(new PackChi with HasAddr with HasQoS))
         val chiTask_s0 = Decoupled(new PackChi with HasAddr with HasQoS)
+        val qosHold    = Input(Bool())
 
         val retry_s1 = Input(Bool())
         val sleep_s1 = Input(Bool())
@@ -127,7 +128,8 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
 
     HAssert.withEn(nidReg.getOrElse(0.U) === 0.U, taskReg.isSleep & wakeUpHit)
 
-    HAssert.checkTimeout(taskReg.isFree, TIMEOUT_TASKBUF, desc = cf"State[${taskReg.state}]")
+    // QoS hold parks a SEND prefetch on purpose. Do not treat that as a leak.
+    HAssert.checkTimeout(taskReg.isFree || io.qosHold, TIMEOUT_TASKBUF, desc = cf"State[${taskReg.state}]")
 }
 
 class StashCollideDbEntry(implicit p: Parameters) extends DJBundle {
@@ -143,6 +145,7 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8, perfName: Stri
 
         val chiTaskIn  = Flipped(Decoupled(new PackChi with HasAddr with HasQoS))
         val chiTask_s0 = Decoupled(new PackChi with HasAddr with HasQoS)
+        val demandOnly = Input(Bool())
         val lockTask   = Output(Bool())
 
         val retry_s1 = Input(Bool())
@@ -159,21 +162,33 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8, perfName: Stri
     Alloc(entries.map(_.io.chiTaskIn), io.chiTaskIn)
 
     val taskVec_s0 = VecInit(entries.map(_.io.chiTask_s0))
+    // Hold low-QoS after CHI accept, but drain it when full so demand can allocate.
+    val hasFree = Cat(entries.map(_.io.chiTaskIn.ready)).orR
+    val admitVec = VecInit(taskVec_s0.map(t => !io.demandOnly || t.bits.qos >= 14.U || !hasFree))
+    val maskedTask_s0 = Wire(Vec(nrEntries, Decoupled(new PackChi with HasAddr with HasQoS)))
+    maskedTask_s0.zip(taskVec_s0).zip(admitVec).foreach { case ((masked, raw), admit) =>
+        masked.valid := raw.valid && admit
+        masked.bits  := raw.bits
+        raw.ready    := masked.ready && admit
+    }
     val lockVec    = VecInit(entries.map(_.io.state.lock))
     val lockIdx    = PriorityEncoder(lockVec)
     val hasLockReg = RegNext(lockVec.asUInt.orR, false.B)
-    when(hasLockReg) {
-        taskVec_s0.foreach(_.ready := false.B)
-        io.chiTask_s0 <> taskVec_s0(lockIdx)
+    val lockAdmit  = admitVec(lockIdx)
+    when(hasLockReg && lockAdmit) {
+        maskedTask_s0.foreach(_.ready := false.B)
+        io.chiTask_s0 <> maskedTask_s0(lockIdx)
     }.otherwise {
-        io.chiTask_s0 <> fastRRArb(taskVec_s0)
+        io.chiTask_s0 <> fastRRArb(maskedTask_s0)
     }
-    io.lockTask := hasLockReg
+    // A masked-off prefetch lock must not block the sibling REQ/HPR buffer.
+    io.lockTask := hasLockReg && lockAdmit
 
-    entries.foreach { case e =>
+    entries.zip(admitVec).foreach { case (e, admit) =>
         e.io.retry_s1 := io.retry_s1
         e.io.sleep_s1 := io.sleep_s1
         e.io.wakeup   := io.wakeup
+        e.io.qosHold  := io.demandOnly && e.io.chiTask_s0.valid && !admit
     }
 
     if (sort) {
@@ -214,7 +229,18 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8, perfName: Stri
                 ("zj_hn_req_collide_stash", io.chiTaskIn.fire && !newIsStash && collideStashAny),
                 ("zj_taskbuf_output_fire", io.chiTask_s0.fire),
                 ("zj_taskbuf_output_stall", io.chiTask_s0.valid && !io.chiTask_s0.ready),
-                ("zj_taskbuf_lock_cycle", io.lockTask)
+                ("zj_taskbuf_lock_cycle", io.lockTask),
+                ("zj_taskbuf_demand_only", io.demandOnly),
+                ("zj_taskbuf_full", !hasFree),
+                ("zj_taskbuf_qos_hold", PopCount(VecInit(entries.zip(admitVec).map {
+                    case (e, admit) => io.demandOnly && e.io.chiTask_s0.valid && !admit
+                }))),
+                ("zj_taskbuf_lowqos_drain",
+                  io.demandOnly && !hasFree && io.chiTask_s0.fire && io.chiTask_s0.bits.qos < 14.U),
+                ("zj_taskbuf_output_demand", io.chiTask_s0.fire && io.chiTask_s0.bits.qos >= 14.U),
+                ("zj_taskbuf_output_prefetch", io.chiTask_s0.fire && io.chiTask_s0.bits.qos < 14.U),
+                ("zj_taskbuf_input_demand_stall",
+                  io.chiTaskIn.valid && io.chiTaskIn.bits.qos >= 14.U && !io.chiTaskIn.ready)
             )
         )
         if (sort) {

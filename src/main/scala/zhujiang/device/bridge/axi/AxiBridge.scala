@@ -150,7 +150,7 @@ class AxiBridge(node: Node)(implicit p: Parameters) extends ZJModule {
         require(requirement = false, s"illegal DW $dw")
     }
     readDataPipe.io.enq.bits.TxnID   := ctrlSel.returnTxnId.get
-    readDataPipe.io.enq.bits.SrcID   := 0.U
+    readDataPipe.io.enq.bits.SrcID   := node.nodeId.U
     readDataPipe.io.enq.bits.TgtID   := ctrlSel.returnNid.get
     readDataPipe.io.enq.bits.HomeNID := ctrlSel.srcId
     readDataPipe.io.enq.bits.DBID    := ctrlSel.txnId
