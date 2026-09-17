@@ -65,6 +65,7 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
         val fastResp = Decoupled(new RespFlit)
 
         val alrUsePoS = Output(UInt(log2Ceil(nrPoS + 1).W))
+        val snAdmitDemandOnly = Input(Bool())
 
         val working = Output(Bool())
     })
@@ -131,6 +132,7 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
         snp2Task.get.io.rxSnp  <> FastQueue(io.rxSnp.get)
 
         snpTaskBuf.get.io.chiTaskIn <> snp2Task.get.io.chiTask
+        snpTaskBuf.get.io.demandOnly := false.B
         snpTaskBuf.get.io.retry_s1  := block.io.retry_s1
         snpTaskBuf.get.io.sleep_s1  := DontCare
         snpTaskBuf.get.io.wakeup    := DontCare
@@ -153,6 +155,8 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
 
     require(!hasBBN, "TODO: connect snpTaskBuf.io.chiTask_s0")
     val selectReq = !hprTaskBuf.io.chiTask_s0.valid & !hprTaskBuf.io.lockTask
+    reqTaskBuf.io.demandOnly := io.snAdmitDemandOnly
+    hprTaskBuf.io.demandOnly := io.snAdmitDemandOnly
     reqTaskBuf.io.chiTask_s0.ready := selectReq
     hprTaskBuf.io.chiTask_s0.ready := true.B
     block.io.chiTask_s0.valid      := Mux(selectReq, reqTaskBuf.io.chiTask_s0.valid, hprTaskBuf.io.chiTask_s0.valid)

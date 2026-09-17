@@ -245,14 +245,20 @@ class HnDelayQueue(name: String = "")(implicit p: Parameters) extends HnBOPModul
 
     val cstDqLatency = Constantin.createRecord(name + "_delayQueueLatency", dQLatency)
     val setDqLatency = Mux(io.pfCtrlOfDelayLatency =/= 0.U, io.pfCtrlOfDelayLatency, cstDqLatency)
-    when(io.in.valid && !full) {
+    val doEnq = io.in.valid
+    val doDeq = outValid && io.out.ready
+    val overwrite = full && doEnq && !doDeq
+    val replaceFull = full && doEnq
+    when(doEnq) {
         queue(tail).addrNoOffset := io.in.bits
         queue(tail).cnt := setDqLatency
         valids(tail) := true.B
         tail := tail + 1.U
     }
-    when(outValid && io.out.ready) {
+    when(doDeq && !replaceFull) {
         valids(head) := false.B
+    }
+    when(doDeq || overwrite) {
         head := head + 1.U
     }
     io.in.ready := true.B
@@ -267,6 +273,7 @@ class HnDelayQueue(name: String = "")(implicit p: Parameters) extends HnBOPModul
 
     ZJPerf.accumulate("full", full)
     ZJPerf.accumulate("empty", empty)
+    ZJPerf.accumulate("overwrite", overwrite)
     ZJPerf.accumulate("entryNumber", PopCount(valids.asUInt))
     ZJPerf.accumulate("inNumber", io.in.valid)
     ZJPerf.accumulate("outNumber", io.out.valid)
@@ -305,9 +312,9 @@ class HnPBestOffsetPrefetch(implicit p: Parameters) extends HnBOPModule {
     rrTable.io.r <> scoreTable.io.test
     rrTable.io.w <> delayQueue.io.out
     delayQueue.io.pfCtrlOfDelayLatency := 0.U
-    delayQueue.io.in.valid := io.train.valid && scoreTable.io.req.ready && s1_ready
+    delayQueue.io.in.valid := io.train.valid && scoreTable.io.req.ready
     delayQueue.io.in.bits := s0_oldAddrNoOff
-    scoreTable.io.req.valid := io.train.valid && delayQueue.io.in.ready && s1_ready
+    scoreTable.io.req.valid := io.train.valid && delayQueue.io.in.ready
     scoreTable.io.req.bits := s0_oldAddr
 
     class HnPBestOffsetReq extends Bundle {
@@ -316,25 +323,32 @@ class HnPBestOffsetPrefetch(implicit p: Parameters) extends HnBOPModule {
     }
     val s1_addr = Reg(UInt(fullAddrBits.W))
     val s1_issueOffset = RegInit(0.S(offsetWidth.W))
-    val reqSkidBuffer = Module(new Queue(new HnPBestOffsetReq, entries = 1, pipe = false, flow = true))
+    val reqSkidValid = RegInit(false.B)
+    val reqSkidBits = Reg(new HnPBestOffsetReq)
 
-    s0_ready := delayQueue.io.in.ready && scoreTable.io.req.ready && s1_ready
-    s1_ready := reqSkidBuffer.io.enq.ready || !s1_req_valid
+    s0_ready := delayQueue.io.in.ready && scoreTable.io.req.ready
+    s1_ready := true.B
 
     when(s0_fire) {
         s1_addr := s0_newAddr
         s1_issueOffset := teacherOffset.asSInt
-        s1_req_valid := enable && !s0_crossPage && s0_sameBank && issueEnable
+        s1_req_valid := !s0_crossPage && s0_sameBank && issueEnable
     }.elsewhen(s1_fire) {
         s1_req_valid := false.B
     }
 
-    reqSkidBuffer.io.enq.valid := s1_req_valid
-    reqSkidBuffer.io.enq.bits.addr := s1_addr
-    reqSkidBuffer.io.enq.bits.issueOffset := s1_issueOffset
-    io.req.valid := enable && reqSkidBuffer.io.deq.valid
+    val skidEnq = s1_req_valid
+    val skidDeq = enable && reqSkidValid && io.req.ready
+    when(skidEnq) {
+        reqSkidBits.addr := s1_addr
+        reqSkidBits.issueOffset := s1_issueOffset
+        reqSkidValid := true.B
+    }.elsewhen(skidDeq) {
+        reqSkidValid := false.B
+    }
+    io.req.valid := enable && reqSkidValid
     io.req.bits := 0.U.asTypeOf(new ReqFlit(false))
-    io.req.bits.Addr := reqSkidBuffer.io.deq.bits.addr
+    io.req.bits.Addr := reqSkidBits.addr
     io.req.bits.Size := log2Ceil(djparam.CacheLine).U
     io.req.bits.Opcode := ReqOpcode.StashOnceShared
     io.req.bits.Order := Order.None
@@ -346,15 +360,16 @@ class HnPBestOffsetPrefetch(implicit p: Parameters) extends HnBOPModule {
     io.req.bits.SrcID := 0.U
     io.req.bits.TgtID := LAN.U
     io.req.bits.QoS := 0.U
-    reqSkidBuffer.io.deq.ready := io.req.ready
     io.train.ready := s0_ready
 
     ZJPerf.accumulate("bop_req", io.req.fire)
-    emitOffsetDistCounters("prefetch_sent_issue_offset", reqSkidBuffer.io.deq.bits.issueOffset, io.req.fire)
+    emitOffsetDistCounters("prefetch_sent_issue_offset", reqSkidBits.issueOffset, io.req.fire)
     ZJPerf.accumulate("bop_train", io.train.fire)
     ZJPerf.accumulate("bop_train_stall_for_st_not_ready", io.train.valid && !scoreTable.io.req.ready)
     ZJPerf.accumulate("bop_drop_for_cross_page", scoreTable.io.req.fire && s0_crossPage)
     ZJPerf.accumulate("bop_drop_for_cross_bank", scoreTable.io.req.fire && !s0_sameBank)
     ZJPerf.accumulate("bop_drop_for_external_disable", scoreTable.io.req.fire && !enable)
     ZJPerf.accumulate("bop_drop_for_auto_disable", scoreTable.io.req.fire && enable && !issueEnable)
+    ZJPerf.accumulate("bop_issue_hold", reqSkidValid && !enable)
+    ZJPerf.accumulate("bop_issue_overwrite", reqSkidValid && skidEnq && !skidDeq)
 }

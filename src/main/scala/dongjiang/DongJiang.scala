@@ -98,6 +98,11 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
 
     val hnPbop = Module(new HnPBestOffsetPrefetch())
     val hnPbopThrottle = Wire(Bool())
+    val snCBusy = RegInit(0.U(3.W))
+    val snCBusyIdle = RegInit(0.U(10.W))
+    val snHard = io.lan.tx.req.get.valid && !io.lan.tx.req.get.ready
+    val snHint = snCBusy(1, 0) >= 2.U
+    val snAdmitDemandOnly = snHint || snHard
     hnPbop.io.bankId := io.config.bankId
 
     val rxReqFromIcn = Wire(Vec(nrIcn, Decoupled(new ReqFlit(false))))
@@ -132,7 +137,11 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
     chiXbar.io.rxReq.outVec.zip(frontends.map(_.io.rxReq)).foreach { case (a, b) => a <> b }
 
     if (hasHPR) {
-        chiXbar.io.rxHpr.inVec.get.zip(icnVec.map(_.rx.hpr.get)).foreach { case (a, b) => connIcn(a, b) }
+        chiXbar.io.rxHpr.inVec.get.zip(icnVec.map(_.rx.hpr.get)).foreach { case (hpr, icn) =>
+            hpr.valid := icn.valid
+            hpr.bits  := icn.bits.asTypeOf(hpr.bits)
+            icn.ready := hpr.ready
+        }
     }
     chiXbar.io.rxHpr.outVec.zip(frontends.map(_.io.rxHpr)).foreach { case (a, b) => a <> b }
 
@@ -172,22 +181,32 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
             true.B                                       -> "b11".U
         )
     )
-    // Sample SN CBusy from CHI E.b RSP/DAT. Keep the last valid hint until
-    // the next response updates it; do not clear it on idle cycles.
-    val snCBusy = RegInit(0.U(3.W))
-    when(rxRspArb.io.out.fire || rxDatArb.io.out.fire) {
-        val rspCBusy = Mux(rxRspArb.io.out.fire, rxRspArb.io.out.bits.CBusy, 0.U)
-        val datCBusy = Mux(rxDatArb.io.out.fire, rxDatArb.io.out.bits.CBusy, 0.U)
+    // Sample SN CBusy from CHI E.b RSP/DAT for local pBOP and QoS admission.
+    // Decay a stale hint because DMT completions may never return to HN.
+    // Do not fold SN occupancy into the CBusy sent back to RN.
+    val rspFromSn = rxRspArb.io.out.fire && fromLanXNode(rxRspArb.io.out.bits.SrcID, snNodeIdSeq)
+    val datFromSn = rxDatArb.io.out.fire && fromLanXNode(rxDatArb.io.out.bits.SrcID, snNodeIdSeq)
+    when(rspFromSn || datFromSn) {
+        val rspCBusy = Mux(rspFromSn, rxRspArb.io.out.bits.CBusy, 0.U)
+        val datCBusy = Mux(datFromSn, rxDatArb.io.out.bits.CBusy, 0.U)
         snCBusy := Mux(rspCBusy > datCBusy, rspCBusy, datCBusy)
+        snCBusyIdle := 0.U
+    }.elsewhen(snCBusy(1, 0) =/= 0.U) {
+        // DMT completions may never return to HN. Decay a stale hint so
+        // already-accepted prefetch can drain and demand cannot deadlock.
+        when(snCBusyIdle === 1023.U) {
+            snCBusy := 0.U
+            snCBusyIdle := 0.U
+        }.otherwise {
+            snCBusyIdle := snCBusyIdle + 1.U
+        }
     }
     val posCBusy = Cat(0.U(1.W), posBusy)
-    val rnCBusy = Mux(posCBusy > snCBusy, posCBusy, snCBusy)
     val posHot = posBusy >= 2.U
-    val snHint = snCBusy >= 2.U
-    val snHard = io.lan.tx.req.get.valid && !io.lan.tx.req.get.ready
-    hnPbopThrottle := posHot || snHint || snHard
+    hnPbopThrottle := posHot || snAdmitDemandOnly
     hnPbop.io.enable := !hnPbopThrottle
-    chiXbar.io.cBusy := RegNext(rnCBusy)
+    chiXbar.io.cBusy := RegNext(posCBusy)
+    frontends.foreach(_.io.snAdmitDemandOnly := snAdmitDemandOnly)
 
     frontends.zipWithIndex.foreach { case (f, i) =>
         f.io.respDir   := directory.io.rRespVec(i)
@@ -232,6 +251,15 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
             ("zj_hn_pbop_req", hnPbop.io.req.fire),
             ("zj_hn_pbop_req_stall", hnPbop.io.req.valid && !hnPbop.io.req.ready),
             ("zj_hn_pbop_throttled", hnPbopThrottle),
+            ("zj_hn_pbop_hold_by_sn", hnPbop.io.req.valid && snAdmitDemandOnly),
+            ("zj_hn_pbop_hold_by_pos", hnPbop.io.req.valid && posHot && !snAdmitDemandOnly),
+            ("zj_hn_sn_admit_demand_only", snAdmitDemandOnly),
+            ("zj_hn_sn_hint", snHint),
+            ("zj_hn_sn_hard", snHard),
+            ("zj_hn_pos_hot", posHot),
+            ("zj_hn_sn_cbusy_hot", snCBusy(1, 0) >= 2.U),
+            ("zj_hn_sn_cbusy_sample", rspFromSn || datFromSn),
+            ("zj_hn_sn_cbusy_decay", snCBusyIdle === 1023.U && snCBusy(1, 0) =/= 0.U),
             ("zj_hn_lan_rx_dat_fire", io.lan.rx.data.get.fire),
             ("zj_hn_lan_rx_dat_stall", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready),
             ("zj_hn_lan_rx_rsp_fire", io.lan.rx.resp.get.fire),
