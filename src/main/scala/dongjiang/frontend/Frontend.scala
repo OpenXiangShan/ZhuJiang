@@ -159,8 +159,11 @@ class Frontend(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
 
     require(!hasBBN, "TODO: connect snpTaskBuf.io.chiTask_s0")
     val selectReq = !hprTaskBuf.io.chiTask_s0.valid & !hprTaskBuf.io.lockTask
-    reqTaskBuf.io.demandOnly := io.snAdmitDemandOnly
-    hprTaskBuf.io.demandOnly := io.snAdmitDemandOnly
+    // The RN now drops low-confidence prefetch at the source by accuracy tier,
+    // so parking low-QoS tasks here only occupies TaskBuffer entries and
+    // raises demand latency. Keep admission fair.
+    reqTaskBuf.io.demandOnly := false.B
+    hprTaskBuf.io.demandOnly := false.B
     reqTaskBuf.io.chiTask_s0.ready := selectReq
     hprTaskBuf.io.chiTask_s0.ready := true.B
     block.io.chiTask_s0.valid      := Mux(selectReq, reqTaskBuf.io.chiTask_s0.valid, hprTaskBuf.io.chiTask_s0.valid)
