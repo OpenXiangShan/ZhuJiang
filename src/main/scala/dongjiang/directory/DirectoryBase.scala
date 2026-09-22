@@ -351,6 +351,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
     resp_d3.metaVec := metaResp_d3(selWay_d3)
     resp_d3.hnTxnID := req_d3.hnIdx.getTxnID
     resp_d3.toRepl  := shiftReg.repl(D3)
+    resp_d3.perfReqKind.foreach(_ := req_d3.perfReqKind)
 
     newReplMes_d3 := repl.get_next_state(replMesReg_d3, OHToUInt(Mux(shiftReg.wriUpdRepl_d3, req_d3.wriWayOH, selWayOH_d3)))
 
