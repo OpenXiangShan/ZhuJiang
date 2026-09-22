@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 import zhujiang.chi._
+import zhujiang.chi.ReqOpcode._
 import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
@@ -49,6 +50,7 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
             val release = Bool()
             val nid     = UInt(nidBits.W)
             val lock    = Bool()
+            val isStash = Bool()
         })
     })
 
@@ -89,7 +91,8 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
     io.state.addr    := taskReg.addr
     io.state.value   := taskReg.state
     io.state.nid     := nidReg.getOrElse(0.U)
-    io.state.lock    := (taskReg.isSend | taskReg.isWait) & timeoutReg
+    io.state.lock := (taskReg.isSend | taskReg.isWait) & timeoutReg
+    io.state.isStash := taskReg.chi.reqIs(StashOnceShared)
     HAssert(!(io.state.valid & io.state.release))
 
     val wakeUpHit = io.wakeup.valid && taskReg.Addr.useAddr === io.wakeup.bits.Addr.useAddr
@@ -168,10 +171,17 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8)(implicit p: Pa
     ZJPerf.whenEnabled {
         val validEntryCount = PopCount(entries.map(_.io.state.valid))
         val waitEntryCount  = PopCount(entries.map(_.io.state.value === WAIT))
+        val newIsStash      = io.chiTaskIn.bits.chi.reqIs(StashOnceShared)
+        val collideReqVec   = entries.map(e => e.io.state.valid & e.io.state.Addr.useAddr === io.chiTaskIn.bits.Addr.useAddr & !e.io.state.isStash)
+        val collideStashVec = entries.map(e => e.io.state.valid & e.io.state.Addr.useAddr === io.chiTaskIn.bits.Addr.useAddr & e.io.state.isStash)
         ZJPerf.accumulate(
             Seq(
                 ("zj_taskbuf_input_fire", io.chiTaskIn.fire),
                 ("zj_taskbuf_input_stall", io.chiTaskIn.valid && !io.chiTaskIn.ready),
+                ("zj_taskbuf_input_stash", io.chiTaskIn.fire && newIsStash),
+                ("zj_hn_stash_collide_req", io.chiTaskIn.fire && newIsStash && collideReqVec.reduce(_ | _)),
+                ("zj_hn_stash_collide_stash", io.chiTaskIn.fire && newIsStash && collideStashVec.reduce(_ | _) && !collideReqVec.reduce(_ | _)),
+                ("zj_hn_req_collide_stash", io.chiTaskIn.fire && !newIsStash && collideStashVec.reduce(_ | _)),
                 ("zj_taskbuf_output_fire", io.chiTask_s0.fire),
                 ("zj_taskbuf_output_stall", io.chiTask_s0.valid && !io.chiTask_s0.ready),
                 ("zj_taskbuf_lock_cycle", io.lockTask)
