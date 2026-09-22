@@ -9,7 +9,9 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
+import xs.utils.GTimer
 import zhujiang.perf.{HistogramRange, ZJPerf}
+import utility.{ChiselDB, Constantin}
 import dongjiang.frontend.TaskState._
 import chisel3.experimental.BundleLiterals._
 
@@ -119,7 +121,14 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
     HAssert.checkTimeout(taskReg.isFree, TIMEOUT_TASKBUF, desc = cf"State[${taskReg.state}]")
 }
 
-class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8)(implicit p: Parameters) extends DJModule {
+class StashCollideDbEntry(implicit p: Parameters) extends DJBundle {
+    val cycle       = UInt(64.W)
+    val useAddr     = UInt(useAddrBits.W)
+    val collideType = UInt(2.W)
+    val nrInflight  = UInt(5.W)
+}
+
+class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8, perfName: String = "req")(implicit p: Parameters) extends DJModule {
 
     val io = IO(new Bundle {
 
@@ -174,19 +183,41 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8)(implicit p: Pa
         val newIsStash      = io.chiTaskIn.bits.chi.reqIs(StashOnceShared)
         val collideReqVec   = entries.map(e => e.io.state.valid & e.io.state.Addr.useAddr === io.chiTaskIn.bits.Addr.useAddr & !e.io.state.isStash)
         val collideStashVec = entries.map(e => e.io.state.valid & e.io.state.Addr.useAddr === io.chiTaskIn.bits.Addr.useAddr & e.io.state.isStash)
+        val collideReqAny   = collideReqVec.reduce(_ | _)
+        val collideStashAny = collideStashVec.reduce(_ | _)
+        val collideAny      = io.chiTaskIn.fire & (collideReqAny | collideStashAny)
         ZJPerf.accumulate(
             Seq(
                 ("zj_taskbuf_input_fire", io.chiTaskIn.fire),
                 ("zj_taskbuf_input_stall", io.chiTaskIn.valid && !io.chiTaskIn.ready),
                 ("zj_taskbuf_input_stash", io.chiTaskIn.fire && newIsStash),
-                ("zj_hn_stash_collide_req", io.chiTaskIn.fire && newIsStash && collideReqVec.reduce(_ | _)),
-                ("zj_hn_stash_collide_stash", io.chiTaskIn.fire && newIsStash && collideStashVec.reduce(_ | _) && !collideReqVec.reduce(_ | _)),
-                ("zj_hn_req_collide_stash", io.chiTaskIn.fire && !newIsStash && collideStashVec.reduce(_ | _)),
+                ("zj_hn_stash_collide_req", io.chiTaskIn.fire && newIsStash && collideReqAny),
+                ("zj_hn_stash_collide_stash", io.chiTaskIn.fire && newIsStash && collideStashAny && !collideReqAny),
+                ("zj_hn_req_collide_stash", io.chiTaskIn.fire && !newIsStash && collideStashAny),
                 ("zj_taskbuf_output_fire", io.chiTask_s0.fire),
                 ("zj_taskbuf_output_stall", io.chiTask_s0.valid && !io.chiTask_s0.ready),
                 ("zj_taskbuf_lock_cycle", io.lockTask)
             )
         )
+        if (sort) {
+            ZJPerf.histogram(
+                s"zj_taskbuf_collide_set_$perfName",
+                Cat(io.chiTaskIn.bits.Addr.dirBank, io.chiTaskIn.bits.Addr.llcSet),
+                collideAny,
+                0,
+                djparam.nrDirBank * llcSets,
+                4
+            )
+
+            val collideTrace = Constantin.createRecord("zj_llc_trace_enable", initValue = false)
+            val collideTable = ChiselDB.createRuntimeGatedTable(s"ZJ_StashCollide_$perfName", new StashCollideDbEntry)
+            val collideEntry = Wire(new StashCollideDbEntry)
+            collideEntry.cycle       := GTimer()
+            collideEntry.useAddr     := io.chiTaskIn.bits.Addr.useAddr
+            collideEntry.collideType := Cat(collideStashAny, collideReqAny)
+            collideEntry.nrInflight  := PopCount(collideReqVec ++ collideStashVec)
+            collideTable.log(collideEntry, collideTrace && collideAny, s"ZJ_StashCollide_$perfName", clock, reset)
+        }
         ZJPerf.distribution(
             "zj_taskbuf_valid_entries",
             validEntryCount,

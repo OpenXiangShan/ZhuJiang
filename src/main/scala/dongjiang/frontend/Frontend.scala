@@ -49,7 +49,7 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
         val fastData = Decoupled(new DataTask)
         val cleanDB  = Decoupled(new HnTxnID with HasDataVec)
 
-        val readDir = Decoupled(new Addr with HasPackHnIdx)
+        val readDir = Decoupled(new Addr with HasPackHnIdx with HasLlcPerfReqKind)
         val respDir = Flipped(Valid(new DirMsg))
 
         val cmtTask = Valid(new CommitTask with HasHnTxnID)
@@ -73,9 +73,9 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
     val hpr2Task = Module(new ReqToChiTask())
     val snp2Task = if (hasBBN) Some(Module(new SnpToChiTask())) else None
 
-    val hprTaskBuf = Module(new TaskBuffer(nrHprTaskBuf, sort = true))
-    val reqTaskBuf = Module(new TaskBuffer(nrReqTaskBuf, sort = true))
-    val snpTaskBuf = if (hasBBN) Some(Module(new TaskBuffer(nrSnpTaskBuf, sort = false))) else None
+    val hprTaskBuf = Module(new TaskBuffer(nrHprTaskBuf, sort = true, perfName = "hpr"))
+    val reqTaskBuf = Module(new TaskBuffer(nrReqTaskBuf, sort = true, perfName = "req"))
+    val snpTaskBuf = if (hasBBN) Some(Module(new TaskBuffer(nrSnpTaskBuf, sort = false, perfName = "snp"))) else None
 
     val posAlloc_s0 = Wire(Valid(new Addr with HasChiChannel))
     val posTable    = Module(new PosTable())
