@@ -9,7 +9,9 @@ import dongjiang._
 import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug.{HAssert, HardwareAssertion}
-import zhujiang.perf.ZJPerf
+import zhujiang.perf.{HistogramRange, ZJPerf}
+import xs.utils.GTimer
+import utility.{ChiselDB, Constantin}
 import xs.utils.sram.{DualPortSramTemplate, SinglePortSramTemplate}
 import freechips.rocketchip.util.ReplacementPolicy
 import xs.utils.mbist.MbistPipeline
@@ -51,7 +53,7 @@ class Shift(implicit p: Parameters) extends DJBundle {
 
 }
 
-class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) extends DJModule {
+class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(implicit p: Parameters) extends DJModule {
     override val desiredName = s"Directory${dirType.toUpperCase}"
     val param                = new DirParam(dirType)
     val repl                 = ReplacementPolicy.fromString("plru", param.ways)
@@ -59,7 +61,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val io = IO(new Bundle {
         val config  = Input(new DJConfigIO())
         val dirBank = Input(UInt(dirBankBits.W))
-        val read    = Flipped(Decoupled(new Addr(dirType) with HasPackHnIdx))
+        val read    = Flipped(Decoupled(new Addr(dirType) with HasPackHnIdx with HasLlcPerfReqKind))
         val write   = Flipped(Decoupled(new DirEntry(dirType) with HasPackHnIdx with HasDirectAlloc))
         val resp    = Valid(new DirEntry(dirType) with HasHnTxnID { val toRepl = Bool() })
         val unlock  = Flipped(Valid(new PackHnIdx))
@@ -116,6 +118,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
         )
     )
     SramPwrCtlBoring.addSink(replArray.io.pwctl)
+
     MbistPipeline.PlaceMbistPipeline(1, desiredName, hasMbist)
 
     dontTouch(metaArray.io)
@@ -158,7 +161,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val reqSftReg = Reg(
         Vec(
             readDirLatency,
-            new DJBundle with HasAddr with HasPackHnIdx {
+                new DJBundle with HasAddr with HasPackHnIdx with HasLlcPerfReqKind {
                 override def addrType: String = dirType
                 val metaVec  = Vec(param.nrMetas, new ChiState(dirType))
                 val wriWayOH = UInt(param.ways.W)
@@ -170,6 +173,9 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
         reqSftReg.last.hnIdx    := Mux(io.write.valid, io.write.bits.hnIdx, io.read.bits.hnIdx)
         reqSftReg.last.wriWayOH := Mux(io.write.valid, io.write.bits.wayOH, 0.U)
         reqSftReg.last.metaVec  := Mux(io.write.valid, io.write.bits.metaVec, 0.U.asTypeOf(reqSftReg.last.metaVec))
+        if (dirType == "llc") {
+            reqSftReg.last.perfReqKind := Mux(io.write.valid, io.write.bits.perfReqKind.get, io.read.bits.perfReqKind)
+        }
     }
     reqSftReg.zipWithIndex.foreach { case (sft, i) =>
         if (i > 0) { when(shiftReg.req.orR | io.read.fire | io.write.fire) { reqSftReg(i - 1) := sft } }
@@ -251,8 +257,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     HardwareAssertion.withEn(tagArray.io.req.ready, tagArray.io.req.valid)
     HardwareAssertion.withEn(tagArray.io.req.bits.mask.get =/= 0.U, tagArray.io.req.valid & tagArray.io.req.bits.write)
 
-    shiftReg.recRead_d0(metaArray.io.req.fire & !metaArray.io.req.bits.write)
-    shiftReg.recWri_d0(metaArray.io.req.fire & metaArray.io.req.bits.write)
+    shiftReg.recRead_d0(metaArray.io.req.fire & read_d0)
+    shiftReg.recWri_d0(metaArray.io.req.fire & (writeAny_d0 | repl_d0))
     shiftReg.recRepl_d0(metaArray.io.req.fire & (wriNoHit_d0 | repl_d0))
     HardwareAssertion(!(shiftReg.read & shiftReg.write).orR)
     HardwareAssertion.withEn((shiftReg.repl & shiftReg.req).orR, shiftReg.repl.orR)
@@ -308,6 +314,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     metaValVec_d3 := metaResp_d3.map(meta => Cat(meta.map(_.isValid)).orR)
     invalidVec_d3 := metaValVec_d3.zip(useWayVecReg_d3.asBools).map { case (m, u) => !m & !u }
     val hasInvalid_d3 = invalidVec_d3.reduce(_ | _)
+    val occupancyReg_d4 = RegEnable(PopCount(metaValVec_d3), shiftReg.req(D3))
+    val setFullReg_d4   = RegEnable(!hasInvalid_d3, shiftReg.req(D3))
     val hitVec_d3     = tagHitVec_d3.zip(metaValVec_d3).map { case (a, b) => a & b }
     val hit_d3        = hitVec_d3.reduce(_ | _)
     readHit_d3 := shiftReg.read(D3) & hit_d3
@@ -350,6 +358,78 @@ class DirectoryBase(dirType: String, powerCtl: Boolean)(implicit p: Parameters) 
     val write_d3    = !shiftReg.read(D3) & shiftReg.write(D3) & !shiftReg.repl(D3)
     val readRepl_d3 = shiftReg.read(D3) & !shiftReg.write(D3) & shiftReg.repl(D3)
     val wriRepl_d3  = !shiftReg.read(D3) & shiftReg.write(D3) & shiftReg.repl(D3)
+
+    if (dirType == "llc") {
+        val traceEnable = Constantin.createRecord("zj_llc_trace_enable", initValue = false)
+        val perfTimer   = GTimer()
+        val installStash = wriNoHit_d0 && io.write.bits.perfReqKind.get === LlcPerfReqKind.StashPrefetch
+        val lookupHit    = read_d3 && hit_d3
+        val lookupMiss   = read_d3 && !hit_d3
+        val lookupStash  = req_d3.perfReqKind === LlcPerfReqKind.StashPrefetch
+        val victimValid  = readRepl_d3 && metaValVec_d3(selWay_d3)
+        val lookupMeta   = metaResp_d3(hitWay_d3).head
+        val victimMeta   = metaResp_d3(selWay_d3).head
+        val stashVictim  = victimValid && victimMeta.stashPrefetched.get
+
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_llc_lookup_hit", lookupHit),
+                ("zj_llc_lookup_miss", lookupMiss),
+                ("zj_llc_stash_late_hit", lookupHit && lookupStash),
+                ("zj_llc_stash_lookup_miss", lookupMiss && lookupStash),
+                ("zj_llc_ordinary_lookup_hit", lookupHit && !lookupStash),
+                ("zj_llc_ordinary_lookup_miss", lookupMiss && !lookupStash),
+                ("zj_llc_stash_install", installStash),
+                ("zj_llc_set_full_on_miss", lookupMiss && !hasInvalid_d3),
+                ("zj_llc_repl_on_miss", readRepl_d3),
+                ("zj_llc_victim_valid", victimValid),
+                ("zj_llc_victim_invalid", readRepl_d3 && !metaValVec_d3(selWay_d3)),
+                ("zj_llc_stash_useless", stashVictim)
+            )
+        )
+        ZJPerf.histogram("zj_llc_set_occupancy", PopCount(metaValVec_d3), read_d3, 0, param.ways + 1)
+
+        val lifecycleTable = ChiselDB.createRuntimeGatedTable(s"ZJ_LLC_Lifecycle_bank$perfBankId", new LlcPerfDbEntry)
+        def initDbEntry(entry: LlcPerfDbEntry, lineAddr: UInt, tag: UInt, set: UInt, way: UInt, event: Int): Unit = {
+            entry.cycle       := perfTimer
+            entry.hnfBank     := io.config.bankId
+            entry.dirBank     := io.dirBank
+            entry.setIdx      := set
+            entry.way         := way
+            entry.tag         := tag
+            entry.lineAddr    := lineAddr
+            entry.eventType   := event.U
+            entry.requestKind := LlcPerfReqKind.Ordinary
+            entry.lineSource  := LlcPerfReqKind.Ordinary
+            entry.age         := 0.U
+            entry.victimValid := false.B
+            entry.setFull     := !hasInvalid_d3
+            entry.occupancy   := PopCount(metaValVec_d3)
+        }
+        val installEntry = Wire(new LlcPerfDbEntry)
+        initDbEntry(installEntry, io.write.bits.addr, io.write.bits.Addr.llcTag, io.write.bits.Addr.llcSet, OHToUInt(io.write.bits.wayOH), 0)
+        installEntry.requestKind := io.write.bits.perfReqKind.get
+        installEntry.lineSource  := LlcPerfReqKind.StashPrefetch
+
+        val lookupEntry = Wire(new LlcPerfDbEntry)
+        initDbEntry(lookupEntry, req_d3.addr, req_d3.Addr.llcTag, reqSet_d3, Mux(hit_d3, hitWay_d3, selWay_d3), 1)
+        lookupEntry.eventType   := Mux(hit_d3, 1.U, 3.U)
+        lookupEntry.requestKind := req_d3.perfReqKind
+        lookupEntry.lineSource  := Mux(lookupMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
+        lookupEntry.age         := 0.U
+
+        val evictEntry = Wire(new LlcPerfDbEntry)
+        initDbEntry(evictEntry, addrVec_d3(selWay_d3).addr, addrVec_d3(selWay_d3).Addr.llcTag, reqSet_d3, selWay_d3, 2)
+        evictEntry.requestKind := req_d3.perfReqKind
+        evictEntry.lineSource  := Mux(victimMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
+        evictEntry.age         := 0.U
+        evictEntry.victimValid := victimValid
+
+        val dbPrefix = s"ZJ_LLC_bank$perfBankId"
+        lifecycleTable.log(installEntry, traceEnable && installStash, dbPrefix, clock, reset)
+        lifecycleTable.log(lookupEntry, traceEnable && read_d3, dbPrefix, clock, reset)
+        lifecycleTable.log(evictEntry, traceEnable && readRepl_d3, dbPrefix, clock, reset)
+    }
     if (dirType == "sf") {
         pendingAllocValid_d3 := read_d3 & !hit_d3 & hasInvalid_d3
     }

@@ -227,11 +227,29 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     }
 
     io.replTask.bits.wriLLC                     := taskReg.cmt.wriLLC
+    io.replTask.bits.llcPerfReqKind             := Mux(
+        taskReg.chi.reqIs(StashOnceShared),
+        LlcPerfReqKind.StashPrefetch,
+        LlcPerfReqKind.Ordinary
+    )
     io.replTask.bits.dir.llc.hit                := taskReg.dir.llc.hit
     io.replTask.bits.dir.llc.wayOH              := taskReg.dir.llc.wayOH
     io.replTask.bits.dir.llc.metaVec.head.state := taskReg.cmt.llcState
+    io.replTask.bits.dir.llc.metaVec.head.stashPrefetched.foreach { bit =>
+        val newLine = taskReg.cmt.wriLLC && !taskReg.dir.llc.hit
+        val invalid = taskReg.cmt.wriLLC && taskReg.cmt.llcState === ChiState.I
+        bit := Mux(invalid, false.B, Mux(newLine, taskReg.chi.reqIs(StashOnceShared), taskReg.dir.llc.metaVec.head.stashPrefetched.get))
+    }
 
     ZJPerf.whenEnabled {
+        val consumeRead = taskReg.chi.reqIs(ReadNotSharedDirty) || taskReg.chi.reqIs(ReadUnique)
+        val stashUseful = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
+            taskReg.dir.llc.metaVec.head.stashPrefetched.get && consumeRead
+        val stashUselessInval = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
+            taskReg.cmt.llcState === ChiState.I && taskReg.dir.llc.metaVec.head.stashPrefetched.get && !consumeRead
+        ZJPerf.accumulate("zj_llc_stash_useful", stashUseful)
+        ZJPerf.accumulate("zj_llc_stash_useless_inval", stashUselessInval)
+
         val sfSrcHit = taskReg.dir.sf.srcHit(taskReg.chi.metaIdOH)
         val sfOthHit = taskReg.dir.sf.othHit(taskReg.chi.metaIdOH)
         val sfSrcWriteCommit = io.replTask.fire && taskReg.cmt.wriSRC

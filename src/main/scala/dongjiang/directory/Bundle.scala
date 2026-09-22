@@ -47,6 +47,24 @@ trait HasDirectAlloc { this: DJBundle =>
 class DirEntry(dirType: String)(implicit p: Parameters) extends DJBundle with HasDirParam with HasAddr with HasDirBaseMsg {
     override def paramType: String = dirType
     override def addrType: String = dirType
+    val perfReqKind = if (dirType == "llc") Some(UInt(2.W)) else None
+}
+
+class LlcPerfDbEntry(implicit p: Parameters) extends DJBundle {
+    val cycle       = UInt(64.W)
+    val hnfBank     = UInt(bankBits.max(1).W)
+    val dirBank     = UInt(dirBankBits.max(1).W)
+    val setIdx      = UInt(llcSetBits.W)
+    val way         = UInt(log2Ceil(djparam.llcWays).W)
+    val tag         = UInt(llcTagBits.W)
+    val lineAddr    = UInt(addrBits.W)
+    val eventType   = UInt(3.W)
+    val requestKind = UInt(2.W)
+    val lineSource  = UInt(2.W)
+    val age         = UInt(64.W)
+    val victimValid = Bool()
+    val setFull     = Bool()
+    val occupancy   = UInt(log2Ceil(djparam.llcWays + 1).W)
 }
 
 trait HasDirMsg extends DJBundle { this: DJBundle =>
