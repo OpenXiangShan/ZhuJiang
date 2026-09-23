@@ -257,8 +257,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
     HardwareAssertion.withEn(tagArray.io.req.ready, tagArray.io.req.valid)
     HardwareAssertion.withEn(tagArray.io.req.bits.mask.get =/= 0.U, tagArray.io.req.valid & tagArray.io.req.bits.write)
 
-    shiftReg.recRead_d0(metaArray.io.req.fire & read_d0)
-    shiftReg.recWri_d0(metaArray.io.req.fire & (writeAny_d0 | repl_d0))
+    shiftReg.recRead_d0(metaArray.io.req.fire & !metaArray.io.req.bits.write)
+    shiftReg.recWri_d0(metaArray.io.req.fire & metaArray.io.req.bits.write)
     shiftReg.recRepl_d0(metaArray.io.req.fire & (wriNoHit_d0 | repl_d0))
     HardwareAssertion(!(shiftReg.read & shiftReg.write).orR)
     HardwareAssertion.withEn((shiftReg.repl & shiftReg.req).orR, shiftReg.repl.orR)
