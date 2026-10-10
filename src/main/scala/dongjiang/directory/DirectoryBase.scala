@@ -377,7 +377,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
             Seq(
                 ("zj_llc_lookup_hit", lookupHit),
                 ("zj_llc_lookup_miss", lookupMiss),
-                ("zj_llc_stash_lookup_hit", lookupHit && lookupStash),
+                ("l3_prefetch_hitCache", lookupHit && lookupStash),
                 ("zj_llc_stash_lookup_miss", lookupMiss && lookupStash),
                 ("zj_llc_ordinary_lookup_hit", lookupHit && !lookupStash),
                 ("zj_llc_ordinary_lookup_miss", lookupMiss && !lookupStash),
@@ -386,7 +386,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
                 ("zj_llc_repl_on_miss", readRepl_d3),
                 ("zj_llc_victim_valid", victimValid),
                 ("zj_llc_victim_invalid", readRepl_d3 && !metaValVec_d3(selWay_d3)),
-                ("zj_llc_stash_useless", stashVictim),
+                ("l3_prefetch_useless", stashVictim),
                 ("zj_llc_stash_used_victim", usedStashVictim)
             )
         )

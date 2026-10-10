@@ -255,8 +255,8 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
         val stashUselessInval = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
             taskReg.cmt.llcState === ChiState.I && taskReg.dir.llc.metaVec.head.stashPrefetched.get &&
             !taskReg.dir.llc.metaVec.head.stashAccessed.get && !consumeRead
-        ZJPerf.accumulate("zj_llc_stash_first_use", io.replTask.fire && stashFirstUse)
-        ZJPerf.accumulate("zj_llc_stash_useless_inval", stashUselessInval)
+        ZJPerf.accumulate("l3_prefetch_useful", io.replTask.fire && stashFirstUse)
+        ZJPerf.accumulate("l3_prefetch_useless_inval", stashUselessInval)
 
         val sfSrcHit = taskReg.dir.sf.srcHit(taskReg.chi.metaIdOH)
         val sfOthHit = taskReg.dir.sf.othHit(taskReg.chi.metaIdOH)
