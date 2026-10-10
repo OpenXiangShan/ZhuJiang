@@ -391,6 +391,9 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
             )
         )
         ZJPerf.histogram("zj_llc_set_occupancy", PopCount(metaValVec_d3), read_d3, 0, param.ways + 1)
+        val replacementSetStep = math.max(1, (param.sets + 63) / 64)
+        ZJPerf.histogram(s"zj_llc_replacement_set_region_bank$perfBankId",
+            reqSet_d3, victimValid, 0, param.sets, replacementSetStep)
 
         val lifecycleTable = ChiselDB.createRuntimeGatedTable(s"ZJ_LLC_Lifecycle_bank$perfBankId", new LlcPerfDbEntry)
         def initDbEntry(entry: LlcPerfDbEntry, lineAddr: UInt, tag: UInt, set: UInt, way: UInt, event: Int): Unit = {
@@ -411,12 +414,13 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
             entry.occupancy   := PopCount(metaValVec_d3)
         }
         val installEntry = Wire(new LlcPerfDbEntry)
-        initDbEntry(installEntry, io.write.bits.addr, io.write.bits.Addr.llcTag, io.write.bits.Addr.llcSet, OHToUInt(io.write.bits.wayOH), 0)
-        installEntry.requestKind := io.write.bits.perfReqKind.get
-        installEntry.lineSource  := LlcPerfReqKind.StashPrefetch
+        initDbEntry(installEntry, Cat(req_d4.addr(addrBits - 1, offsetBits), 0.U(offsetBits.W)), req_d4.Addr.llcTag, req_d4.Addr.llcSet, OHToUInt(selWayOHReg_d4), 0)
+        installEntry.requestKind := req_d4.perfReqKind
+        installEntry.lineSource  := Mux(req_d4.metaVec.head.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
+        installEntry.lineUsed    := req_d4.metaVec.head.stashAccessed.get
 
         val lookupEntry = Wire(new LlcPerfDbEntry)
-        initDbEntry(lookupEntry, req_d3.addr, req_d3.Addr.llcTag, reqSet_d3, Mux(hit_d3, hitWay_d3, selWay_d3), 1)
+        initDbEntry(lookupEntry, Cat(req_d3.addr(addrBits - 1, offsetBits), 0.U(offsetBits.W)), req_d3.Addr.llcTag, reqSet_d3, Mux(hit_d3, hitWay_d3, selWay_d3), 1)
         lookupEntry.eventType   := Mux(hit_d3, 1.U, 3.U)
         lookupEntry.requestKind := req_d3.perfReqKind
         lookupEntry.lineSource  := Mux(hit_d3 && lookupMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
@@ -432,7 +436,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
         evictEntry.victimValid := victimValid
 
         val dbPrefix = s"ZJ_LLC_bank$perfBankId"
-        lifecycleTable.log(installEntry, traceEnable && installStash, dbPrefix, clock, reset)
+        // eventType 0=install, 1=hit, 2=replacement attempt, 3=miss; victimValid marks an actual eviction.
+        lifecycleTable.log(installEntry, traceEnable && repl_d0 && req_d4.metaVec.head.isValid, dbPrefix, clock, reset)
         lifecycleTable.log(lookupEntry, traceEnable && read_d3, dbPrefix, clock, reset)
         lifecycleTable.log(evictEntry, traceEnable && readRepl_d3, dbPrefix, clock, reset)
     }
