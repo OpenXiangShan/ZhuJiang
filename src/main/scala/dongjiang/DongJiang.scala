@@ -10,6 +10,7 @@ import dongjiang.frontend._
 import dongjiang.backend._
 import dongjiang.directory._
 import dongjiang.data._
+import dongjiang.prefetch.HnPBestOffsetPrefetch
 import xijiang._
 import xijiang.router.base.DeviceIcnBundle
 import zhujiang.chi.FlitHelper.connIcn
