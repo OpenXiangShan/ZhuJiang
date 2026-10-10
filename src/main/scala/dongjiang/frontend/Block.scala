@@ -22,7 +22,7 @@ class Block(implicit p: Parameters) extends DJModule {
         val chiTask_s0 = Flipped(Valid(new PackChi with HasAddr with HasQoS))
         val task_s1    = Valid(new PackChi with HasAddr with HasPackHnIdx with HasAlready with HasQoS)
 
-        val readDir_s1 = Decoupled(new Addr with HasPackHnIdx)
+        val readDir_s1 = Decoupled(new Addr with HasPackHnIdx with HasLlcPerfReqKind)
 
         val posBlock_s1 = Input(Bool())
         val hnIdx_s1    = Input(new HnIndex())
@@ -70,6 +70,11 @@ class Block(implicit p: Parameters) extends DJModule {
     io.readDir_s1.valid      := validReg_s1 & taskReg_s1.chi.memAttr.cacheable & !(block_s1.pos | block_s1.resp)
     io.readDir_s1.bits.addr  := taskReg_s1.addr
     io.readDir_s1.bits.hnIdx := io.hnIdx_s1
+    io.readDir_s1.bits.perfReqKind := Mux(
+        taskReg_s1.chi.reqIs(StashOnceShared),
+        LlcPerfReqKind.StashPrefetch,
+        LlcPerfReqKind.Ordinary
+    )
 
     sReceiptReg_s1 := io.chiTask_s0.bits.chi.isRead & (io.chiTask_s0.bits.chi.isEO | io.chiTask_s0.bits.chi.isRO)
     sDBIDReg_s1    := io.chiTask_s0.bits.chi.isWrite & !io.chiTask_s0.bits.chi.isCopyBackWrite

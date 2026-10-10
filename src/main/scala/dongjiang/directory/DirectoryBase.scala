@@ -370,13 +370,14 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
         val victimValid  = readRepl_d3 && metaValVec_d3(selWay_d3)
         val lookupMeta   = metaResp_d3(hitWay_d3).head
         val victimMeta   = metaResp_d3(selWay_d3).head
-        val stashVictim  = victimValid && victimMeta.stashPrefetched.get
+        val stashVictim  = victimValid && victimMeta.stashPrefetched.get && !victimMeta.stashAccessed.get
+        val usedStashVictim = victimValid && victimMeta.stashPrefetched.get && victimMeta.stashAccessed.get
 
         ZJPerf.accumulate(
             Seq(
                 ("zj_llc_lookup_hit", lookupHit),
                 ("zj_llc_lookup_miss", lookupMiss),
-                ("zj_llc_stash_late_hit", lookupHit && lookupStash),
+                ("zj_llc_stash_lookup_hit", lookupHit && lookupStash),
                 ("zj_llc_stash_lookup_miss", lookupMiss && lookupStash),
                 ("zj_llc_ordinary_lookup_hit", lookupHit && !lookupStash),
                 ("zj_llc_ordinary_lookup_miss", lookupMiss && !lookupStash),
@@ -385,7 +386,8 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
                 ("zj_llc_repl_on_miss", readRepl_d3),
                 ("zj_llc_victim_valid", victimValid),
                 ("zj_llc_victim_invalid", readRepl_d3 && !metaValVec_d3(selWay_d3)),
-                ("zj_llc_stash_useless", stashVictim)
+                ("zj_llc_stash_useless", stashVictim),
+                ("zj_llc_stash_used_victim", usedStashVictim)
             )
         )
         ZJPerf.histogram("zj_llc_set_occupancy", PopCount(metaValVec_d3), read_d3, 0, param.ways + 1)
@@ -402,6 +404,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
             entry.eventType   := event.U
             entry.requestKind := LlcPerfReqKind.Ordinary
             entry.lineSource  := LlcPerfReqKind.Ordinary
+            entry.lineUsed    := false.B
             entry.age         := 0.U
             entry.victimValid := false.B
             entry.setFull     := !hasInvalid_d3
@@ -416,14 +419,16 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
         initDbEntry(lookupEntry, req_d3.addr, req_d3.Addr.llcTag, reqSet_d3, Mux(hit_d3, hitWay_d3, selWay_d3), 1)
         lookupEntry.eventType   := Mux(hit_d3, 1.U, 3.U)
         lookupEntry.requestKind := req_d3.perfReqKind
-        lookupEntry.lineSource  := Mux(lookupMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
-        lookupEntry.age         := 0.U
+        lookupEntry.lineSource  := Mux(hit_d3 && lookupMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
+        lookupEntry.lineUsed    := hit_d3 && lookupMeta.stashAccessed.get
+        lookupEntry.age         := Mux(hit_d3 && lookupMeta.stashPrefetched.get, perfTimer - lookupMeta.stashInstallCycle.get, 0.U)
 
         val evictEntry = Wire(new LlcPerfDbEntry)
         initDbEntry(evictEntry, addrVec_d3(selWay_d3).addr, addrVec_d3(selWay_d3).Addr.llcTag, reqSet_d3, selWay_d3, 2)
         evictEntry.requestKind := req_d3.perfReqKind
-        evictEntry.lineSource  := Mux(victimMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
-        evictEntry.age         := 0.U
+        evictEntry.lineSource  := Mux(victimValid && victimMeta.stashPrefetched.get, LlcPerfReqKind.StashPrefetch, LlcPerfReqKind.Ordinary)
+        evictEntry.lineUsed    := victimValid && victimMeta.stashAccessed.get
+        evictEntry.age         := Mux(victimValid && victimMeta.stashPrefetched.get, perfTimer - victimMeta.stashInstallCycle.get, 0.U)
         evictEntry.victimValid := victimValid
 
         val dbPrefix = s"ZJ_LLC_bank$perfBankId"
@@ -540,12 +545,29 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
     }
 
     ZJPerf.whenEnabled {
+        // read_stall 原因细分(三者互斥;除 reset 期外,和 == read_stall):
+        //   by_write : 有目录项更新(write)待发,写优先级高于读
+        //   by_replwr: 替换路径将要写(repl & read 流水重叠)
+        //   by_sram  : 多周期 SRAM 口仍被上一次读/写占用(tagMetaReady=0)
+        // write_stall 同理细分(by_replwr 优先归因)。
+        val readStall     = io.read.valid && !io.read.ready
+        val stallByWrite  = readStall && io.write.valid
+        val stallByReplWr = readStall && !io.write.valid && shiftReg.replWillWrite
+        val stallBySram   = readStall && !io.write.valid && !shiftReg.replWillWrite && resetDoneReg && !shiftReg.tagMetaReady
+        val writeStall    = io.write.valid && !io.write.ready
+        val wStallByRepl  = writeStall && shiftReg.replWillWrite
+        val wStallBySram  = writeStall && !shiftReg.replWillWrite && resetDoneReg && !shiftReg.tagMetaReady
         ZJPerf.accumulate(
             Seq(
                 ("zj_dirbase_read_fire", io.read.fire),
-                ("zj_dirbase_read_stall", io.read.valid && !io.read.ready),
+                ("zj_dirbase_read_stall", readStall),
+                (s"zj_dirbase_${dirType}_read_stall_by_write", stallByWrite),
+                (s"zj_dirbase_${dirType}_read_stall_by_replwr", stallByReplWr),
+                (s"zj_dirbase_${dirType}_read_stall_by_sram", stallBySram),
                 ("zj_dirbase_write_fire", io.write.fire),
-                ("zj_dirbase_write_stall", io.write.valid && !io.write.ready),
+                ("zj_dirbase_write_stall", writeStall),
+                (s"zj_dirbase_${dirType}_write_stall_by_replwr", wStallByRepl),
+                (s"zj_dirbase_${dirType}_write_stall_by_sram", wStallBySram),
                 ("zj_dirbase_d3_read_miss", read_d3 && !hit_d3),
                 ("zj_dirbase_d3_read_hit", read_d3 && hit_d3),
                 (s"zj_dirbase_${dirType}_d3_read_repl", readRepl_d3),

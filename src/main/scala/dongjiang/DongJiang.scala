@@ -80,7 +80,7 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
         }
     }
 
-    val frontends = Seq.fill(djparam.nrDirBank)(Module(new Frontend()))
+    val frontends = (0 until djparam.nrDirBank).map(i => Module(new Frontend(perfBankId = i)))
     val backend   = Module(new Backend())
     val directory = Module(new Directory())
     val dataBlock = Module(new DataBlock())
@@ -177,21 +177,55 @@ class DongJiang(lanNode: Node, bbnNode: Option[Node] = None)(implicit p: Paramet
         val hnIngressStall    = io.lan.rx.bundleMap.values.map(ch => ch.valid && !ch.ready).reduce(_ || _)
         val hnEgressStall     = io.lan.tx.bundleMap.values.map(ch => ch.valid && !ch.ready).reduce(_ || _)
         val hnTopDownPressure = hnIngressStall || hnEgressStall
+        // Classify only from CHI payload opcodes visible at the HN LAN boundary.
+        val txDatOp  = io.lan.tx.data.get.bits.asTypeOf(new DataFlit()).Opcode
+        val txDatIsSnpResp = txDatOp === DatOpcode.SnpRespData || txDatOp === DatOpcode.SnpRespDataPtl ||
+            txDatOp === DatOpcode.SnpRespDataFwded
+        val txDatIsResp = txDatOp === DatOpcode.CompData || txDatOp === DatOpcode.DataSepResp || txDatIsSnpResp
+        val txDatIsWrite = txDatOp === DatOpcode.CopyBackWriteData || txDatOp === DatOpcode.NonCopyBackWriteData ||
+            txDatOp === DatOpcode.NCBWrDataCompAck
+        val rxDatOp  = io.lan.rx.data.get.bits.asTypeOf(new DataFlit()).Opcode
+        val rxDatIsSnpResp = rxDatOp === DatOpcode.SnpRespData || rxDatOp === DatOpcode.SnpRespDataPtl ||
+            rxDatOp === DatOpcode.SnpRespDataFwded
+        val rxDatIsWr = rxDatOp === DatOpcode.CopyBackWriteData || rxDatOp === DatOpcode.NonCopyBackWriteData ||
+            rxDatOp === DatOpcode.NCBWrDataCompAck
+        val txRspOp = io.lan.tx.resp.get.bits.asTypeOf(new RespFlit()).Opcode
+        val rxRspOp = io.lan.rx.resp.get.bits.asTypeOf(new RespFlit()).Opcode
+        val txRspIsSnpResp = txRspOp === RspOpcode.SnpResp || txRspOp === RspOpcode.SnpRespFwded
+        val rxRspIsSnpResp = rxRspOp === RspOpcode.SnpResp || rxRspOp === RspOpcode.SnpRespFwded
+        val txSnpReqStall = io.lan.tx.snoop.get.valid && !io.lan.tx.snoop.get.ready
+        val rxSnpRespRspStall = io.lan.rx.resp.get.valid && !io.lan.rx.resp.get.ready && rxRspIsSnpResp
+        val rxSnpRespDatStall = io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready && rxDatIsSnpResp
+        val rxSnpRespStall = rxSnpRespRspStall || rxSnpRespDatStall
         var xsPerfSeq = Seq(
             ("zj_hn_lan_rx_req_fire", io.lan.rx.req.get.fire),
             ("zj_hn_lan_rx_req_stall", io.lan.rx.req.get.valid && !io.lan.rx.req.get.ready),
             ("zj_hn_lan_rx_dat_fire", io.lan.rx.data.get.fire),
             ("zj_hn_lan_rx_dat_stall", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready),
+            ("zj_hn_lan_rx_dat_stall_write", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready && rxDatIsWr),
+            ("zj_hn_lan_rx_dat_stall_snp_resp", rxSnpRespDatStall),
+            ("zj_hn_lan_rx_dat_stall_other", io.lan.rx.data.get.valid && !io.lan.rx.data.get.ready && !rxDatIsWr && !rxDatIsSnpResp),
             ("zj_hn_lan_rx_rsp_fire", io.lan.rx.resp.get.fire),
             ("zj_hn_lan_rx_rsp_stall", io.lan.rx.resp.get.valid && !io.lan.rx.resp.get.ready),
+            ("zj_hn_lan_rx_rsp_stall_snp_resp", rxSnpRespRspStall),
+            ("zj_hn_lan_rx_rsp_stall_other", io.lan.rx.resp.get.valid && !io.lan.rx.resp.get.ready && !rxRspIsSnpResp),
             ("zj_hn_lan_tx_req_fire", io.lan.tx.req.get.fire),
             ("zj_hn_lan_tx_req_stall", io.lan.tx.req.get.valid && !io.lan.tx.req.get.ready),
             ("zj_hn_lan_tx_dat_fire", io.lan.tx.data.get.fire),
             ("zj_hn_lan_tx_dat_stall", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready),
+            ("zj_hn_lan_tx_dat_stall_resp", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready && txDatIsResp),
+            ("zj_hn_lan_tx_dat_stall_snp_resp", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready && txDatIsSnpResp),
+            ("zj_hn_lan_tx_dat_stall_write", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready && txDatIsWrite),
+            ("zj_hn_lan_tx_dat_stall_other", io.lan.tx.data.get.valid && !io.lan.tx.data.get.ready && !txDatIsResp && !txDatIsWrite),
             ("zj_hn_lan_tx_rsp_fire", io.lan.tx.resp.get.fire),
             ("zj_hn_lan_tx_rsp_stall", io.lan.tx.resp.get.valid && !io.lan.tx.resp.get.ready),
+            ("zj_hn_lan_tx_rsp_stall_snp_resp", io.lan.tx.resp.get.valid && !io.lan.tx.resp.get.ready && txRspIsSnpResp),
             ("zj_hn_lan_tx_snp_fire", io.lan.tx.snoop.get.fire),
             ("zj_hn_lan_tx_snp_stall", io.lan.tx.snoop.get.valid && !io.lan.tx.snoop.get.ready),
+            ("zj_hn_snoop_req_stall", txSnpReqStall),
+            ("zj_hn_snoop_resp_stall", rxSnpRespStall),
+            ("zj_hn_snoop_resp_rsp_stall", rxSnpRespRspStall),
+            ("zj_hn_snoop_resp_dat_stall", rxSnpRespDatStall),
             ("zj_hn_topdown_pressure_cycle", hnTopDownPressure)
         )
         if (hasHPR) {

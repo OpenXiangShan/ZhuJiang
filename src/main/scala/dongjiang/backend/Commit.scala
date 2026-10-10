@@ -235,19 +235,27 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.replTask.bits.dir.llc.hit                := taskReg.dir.llc.hit
     io.replTask.bits.dir.llc.wayOH              := taskReg.dir.llc.wayOH
     io.replTask.bits.dir.llc.metaVec.head.state := taskReg.cmt.llcState
+    val perfTimer = GTimer()
+    val consumeRead = taskReg.chi.reqIs(ReadNotSharedDirty) || taskReg.chi.reqIs(ReadUnique)
+    val stashInstall = taskReg.cmt.wriLLC && !taskReg.dir.llc.hit && taskReg.chi.reqIs(StashOnceShared)
+    val stashFirstUse = taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
+        taskReg.dir.llc.metaVec.head.stashPrefetched.get && !taskReg.dir.llc.metaVec.head.stashAccessed.get && consumeRead
+    val stashInvalid = taskReg.cmt.wriLLC && taskReg.cmt.llcState === ChiState.I
     io.replTask.bits.dir.llc.metaVec.head.stashPrefetched.foreach { bit =>
-        val newLine = taskReg.cmt.wriLLC && !taskReg.dir.llc.hit
-        val invalid = taskReg.cmt.wriLLC && taskReg.cmt.llcState === ChiState.I
-        bit := Mux(invalid, false.B, Mux(newLine, taskReg.chi.reqIs(StashOnceShared), taskReg.dir.llc.metaVec.head.stashPrefetched.get))
+        bit := Mux(stashInvalid, false.B, Mux(stashInstall, true.B, taskReg.dir.llc.metaVec.head.stashPrefetched.get))
+    }
+    io.replTask.bits.dir.llc.metaVec.head.stashAccessed.foreach { bit =>
+        bit := Mux(stashInvalid, false.B, Mux(stashInstall, false.B, Mux(stashFirstUse, true.B, taskReg.dir.llc.metaVec.head.stashAccessed.get)))
+    }
+    io.replTask.bits.dir.llc.metaVec.head.stashInstallCycle.foreach { cycle =>
+        cycle := Mux(stashInvalid, 0.U, Mux(stashInstall, perfTimer, taskReg.dir.llc.metaVec.head.stashInstallCycle.get))
     }
 
     ZJPerf.whenEnabled {
-        val consumeRead = taskReg.chi.reqIs(ReadNotSharedDirty) || taskReg.chi.reqIs(ReadUnique)
-        val stashUseful = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
-            taskReg.dir.llc.metaVec.head.stashPrefetched.get && consumeRead
         val stashUselessInval = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
-            taskReg.cmt.llcState === ChiState.I && taskReg.dir.llc.metaVec.head.stashPrefetched.get && !consumeRead
-        ZJPerf.accumulate("zj_llc_stash_useful", stashUseful)
+            taskReg.cmt.llcState === ChiState.I && taskReg.dir.llc.metaVec.head.stashPrefetched.get &&
+            !taskReg.dir.llc.metaVec.head.stashAccessed.get && !consumeRead
+        ZJPerf.accumulate("zj_llc_stash_first_use", io.replTask.fire && stashFirstUse)
         ZJPerf.accumulate("zj_llc_stash_useless_inval", stashUselessInval)
 
         val sfSrcHit = taskReg.dir.sf.srcHit(taskReg.chi.metaIdOH)

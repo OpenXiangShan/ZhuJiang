@@ -16,7 +16,7 @@ import xs.utils.queue.FastQueue
 import xs.utils.GTimer
 import zhujiang.perf.ZJPerf
 
-class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
+class Frontend(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Parameters) extends DJModule {
     override def isTopModule: Boolean = isTop
 
     private def bufferReqWithIngressCycle(rxReq: DecoupledIO[ReqFlit]): DecoupledIO[TimedReqFlit] = {
@@ -78,7 +78,7 @@ class Frontend(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
     val snpTaskBuf = if (hasBBN) Some(Module(new TaskBuffer(nrSnpTaskBuf, sort = false, perfName = "snp"))) else None
 
     val posAlloc_s0 = Wire(Valid(new Addr with HasChiChannel))
-    val posTable    = Module(new PosTable())
+    val posTable    = Module(new PosTable(perfBankId = perfBankId))
     val block       = Module(new Block())
 
     val pipe = Module(new Pipe(chiselTypeOf(block.io.task_s1.bits), readDirLatency - 1))

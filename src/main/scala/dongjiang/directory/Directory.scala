@@ -17,7 +17,7 @@ class Directory(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
     val io = IO(new Bundle {
         val config = Input(new DJConfigIO())
 
-        val readVec = Vec(djparam.nrDirBank, Flipped(Decoupled(new Addr with HasPackHnIdx)))
+        val readVec = Vec(djparam.nrDirBank, Flipped(Decoupled(new Addr with HasPackHnIdx with HasLlcPerfReqKind)))
 
         val rRespVec = Vec(djparam.nrDirBank, Valid(new DirMsg))
 
@@ -34,8 +34,8 @@ class Directory(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
         val unlock = Flipped(Valid(new PackHnIdx))
     })
 
-    val llcs = Seq.fill(djparam.nrDirBank)(Module(new DirectoryBase("llc", !isTop)))
-    val sfs  = Seq.fill(djparam.nrDirBank)(Module(new DirectoryBase("sf", !isTop)))
+    val llcs = (0 until djparam.nrDirBank).map(i => Module(new DirectoryBase("llc", !isTop, i)))
+    val sfs  = (0 until djparam.nrDirBank).map(i => Module(new DirectoryBase("sf", !isTop, i)))
 
     llcs.zip(sfs).zipWithIndex.foreach { case ((llc, sf), i) =>
         llc.io.config  := io.config

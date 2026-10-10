@@ -11,7 +11,7 @@ import dongjiang.bundle._
 import xs.utils.debug._
 import xs.utils.GTimer
 import zhujiang.perf.{HistogramRange, ZJPerf}
-import utility.{ChiselDB, Constantin}
+import utility.{ChiselDB, Constantin, ParallelMux}
 import dongjiang.frontend.TaskState._
 import chisel3.experimental.BundleLiterals._
 
@@ -46,6 +46,7 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
 
         val initNid = if (sort) Some(Input(UInt(nidBits.W))) else None
         val othRel  = if (sort) Some(Input(Bool())) else None
+        val waitMeasure = Output(Valid(UInt(64.W)))
         val state = Output(new DJBundle with HasAddr {
             val valid   = Bool()
             val value   = UInt(TaskState.width.W)
@@ -74,6 +75,14 @@ class TaskEntry(nidBits: Int, sort: Boolean, timeout: Int)(implicit p: Parameter
         taskReg.qos  := io.chiTaskIn.bits.qos
     }
     io.chiTaskIn.ready := taskReg.isFree
+
+    // 排队时长:入队到首次被发射(重试不再计入,由 retry 路径另行观测)
+    val queueTsReg = RegEnable(GTimer(), io.chiTaskIn.fire)
+    val issuedReg  = RegInit(false.B)
+    when (io.chiTaskIn.fire) { issuedReg := false.B }
+    when (io.chiTask_s0.fire) { issuedReg := true.B }
+    io.waitMeasure.valid := io.chiTask_s0.fire && !issuedReg
+    io.waitMeasure.bits  := GTimer() - queueTsReg
 
     io.chiTask_s0.valid := taskReg.isSend & nidReg.getOrElse(0.U) === 0.U
     io.chiTask_s0.bits  := taskReg
@@ -178,6 +187,15 @@ class TaskBuffer(nrEntries: Int, sort: Boolean, timeout: Int = 8, perfName: Stri
     io.working := Cat(entries.map(_.io.state.valid)).orR
 
     ZJPerf.whenEnabled {
+        // 排队时长聚合:本次发射 entry 的 (入队时刻 -> 首次发射)
+        val waitMeasure = ParallelMux(entries.map(e => e.io.waitMeasure.valid -> e.io.waitMeasure.bits))
+        val waitEn = entries.map(_.io.waitMeasure.valid).reduce(_ || _)
+        ZJPerf.accumulate(
+            Seq(
+                (s"zj_taskbuf_${perfName}_queue_wait_sum", Mux(waitEn, waitMeasure, 0.U)),
+                (s"zj_taskbuf_${perfName}_queue_cnt", waitEn)
+            )
+        )
         val validEntryCount = PopCount(entries.map(_.io.state.valid))
         val waitEntryCount  = PopCount(entries.map(_.io.state.value === WAIT))
         val newIsStash      = io.chiTaskIn.bits.chi.reqIs(StashOnceShared)

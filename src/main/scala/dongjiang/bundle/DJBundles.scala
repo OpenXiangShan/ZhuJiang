@@ -63,6 +63,15 @@ trait HasAddr extends DJBundle { this: DJBundle =>
     }
 }
 
+object LlcPerfReqKind {
+    val Ordinary = 0.U(2.W)
+    val StashPrefetch = 1.U(2.W)
+}
+
+trait HasLlcPerfReqKind extends DJBundle {
+    val perfReqKind = UInt(2.W)
+}
+
 class Addr(dirType: String = "llc")(implicit p: Parameters) extends DJBundle with HasAddr {
     override def addrType: String = dirType
 }

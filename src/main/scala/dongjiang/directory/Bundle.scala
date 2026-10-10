@@ -61,6 +61,7 @@ class LlcPerfDbEntry(implicit p: Parameters) extends DJBundle {
     val eventType   = UInt(3.W)
     val requestKind = UInt(2.W)
     val lineSource  = UInt(2.W)
+    val lineUsed    = Bool()
     val age         = UInt(64.W)
     val victimValid = Bool()
     val setFull     = Bool()

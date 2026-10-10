@@ -137,6 +137,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         alloc.wriSF        := io.alloc.bits.wriSF
         alloc.wriLLC       := io.alloc.bits.wriLLC
         alloc.directAllocSF := io.alloc.bits.directAllocSF
+        alloc.llcPerfReqKind := io.alloc.bits.llcPerfReqKind
         alloc.hnTxnID      := io.alloc.bits.hnTxnID
         alloc.repl.hnTxnID := io.alloc.bits.hnTxnID
         alloc.qos          := io.alloc.bits.qos
@@ -171,6 +172,7 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     io.writeDir.bits.llc.bits.metaVec     := reg.dir.llc.metaVec
     io.writeDir.bits.llc.bits.hnIdx       := reg.getHnIdx
     io.writeDir.bits.llc.bits.directAlloc := false.B
+    io.writeDir.bits.llc.bits.perfReqKind.foreach(_ := reg.llcPerfReqKind)
 
     io.writeDir.bits.sf.valid            := reg.wriSF
     io.writeDir.bits.sf.bits.addr        := reg.hnTxnID

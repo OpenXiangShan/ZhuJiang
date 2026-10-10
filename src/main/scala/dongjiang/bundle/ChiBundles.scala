@@ -80,7 +80,9 @@ trait HasChiState { this: Bundle =>
 
 class ChiState(dirType: String = "llc") extends Bundle with HasChiState {
     override def stateType: String = dirType
-    val stashPrefetched = if (dirType == "llc") Some(Bool()) else None
+    val stashPrefetched   = if (dirType == "llc") Some(Bool()) else None
+    val stashAccessed     = if (dirType == "llc") Some(Bool()) else None
+    val stashInstallCycle = if (dirType == "llc") Some(UInt(64.W)) else None
 }
 
 object ChiChannel {

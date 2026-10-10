@@ -41,6 +41,7 @@ class ReplTask(implicit p: Parameters) extends DJBundle with HasHnTxnID with Has
     val wriSF  = Bool()
     val wriLLC = Bool()
     val directAllocSF = Bool()
+    val llcPerfReqKind = UInt(2.W)
     def isDirectAllocSF = wriSF & !dir.sf.hit & directAllocSF
     def isReplSF = wriSF & !dir.sf.hit & !directAllocSF
     def isReplLLC = wriLLC & !dir.llc.hit

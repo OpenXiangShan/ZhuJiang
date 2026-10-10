@@ -272,7 +272,9 @@ class SnoopCM(implicit p: Parameters) extends DJModule {
         ZJPerf.accumulate(
             Seq(
                 "zj_hn_snoopcm_alloc_fire"       -> io.alloc.fire,
-                "zj_hn_snoopcm_alloc_full_stall" -> (io.alloc.valid && full)
+                "zj_hn_snoopcm_alloc_full_stall" -> (io.alloc.valid && full),
+                "zj_hn_snoopcm_req_stall"        -> (io.txSnp.valid && !io.txSnp.ready),
+                "zj_hn_snoopcm_resp_stall"       -> (io.resp.valid && !io.resp.ready)
             )
         )
         ZJPerf.distribution(

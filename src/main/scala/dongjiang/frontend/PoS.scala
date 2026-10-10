@@ -120,7 +120,7 @@ class PosEntry(implicit p: Parameters) extends DJModule {
     io.wakeup.bits.Addr.catPoS(io.config.bankId, stateReg.tag, io.hnIdx.pos.set, io.hnIdx.dirBank)
 }
 
-class PosSet(implicit p: Parameters) extends DJModule {
+class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
 
     val io = IO(new Bundle {
         val config  = new DJConfigIO()
@@ -240,6 +240,8 @@ class PosSet(implicit p: Parameters) extends DJModule {
     HAssert.withEn(!VecInit(esVec.map(es => es.valid & es.tagVal & es.addr === io.updTag.bits.addr)).asUInt.orR, io.updTag.valid & io.updTag.bits.addrVal)
 
     ZJPerf.whenEnabled {
+        val perfSetName = if (perfSetId >= 0) perfSetId.toString else "shared"
+        val occupancy = PopCount(esVec.map(_.valid))
         val blockNoFree = io.alloc_s0.valid && !hasMatTag && !hasFree_s0
         val blockMatTag = io.alloc_s0.valid && hasMatTag && (
             io.alloc_s0.bits.isReq || (io.alloc_s0.bits.isSnp && !canNest_s0)
@@ -259,13 +261,26 @@ class PosSet(implicit p: Parameters) extends DJModule {
                 ("zj_pos_set_block_lock", blockLock),
                 ("zj_pos_set_block_req_pos", blockReqPoS),
                 ("zj_pos_set_req_pos_fire", reqPosFire),
-                ("zj_pos_set_req_pos_block", reqPoSBlock)
+                ("zj_pos_set_req_pos_block", reqPoSBlock),
+                (s"zj_pos_set_${perfSetName}_alloc_attempt", io.alloc_s0.valid),
+                (s"zj_pos_set_${perfSetName}_alloc_fire", allocReg_s1.valid && !io.retry_s1),
+                (s"zj_pos_set_${perfSetName}_alloc_block", io.alloc_s0.valid && block_s0),
+                (s"zj_pos_set_${perfSetName}_alloc_retry", allocReg_s1.valid && io.retry_s1),
+                (s"zj_pos_set_${perfSetName}_reqpos_fire", reqPosFire),
+                (s"zj_pos_set_${perfSetName}_reqpos_block", reqPoSBlock),
+                (s"zj_pos_set_${perfSetName}_hotspot_cycle", occupancy >= (posWays - 1).U)
             )
+        )
+        ZJPerf.distribution(
+            s"zj_pos_set_${perfSetName}_occupancy",
+            occupancy,
+            true.B,
+            HistogramRange.occupancy(posWays)
         )
     }
 }
 
-class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
+class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Parameters) extends DJModule {
     override def isTopModule: Boolean = isTop
 
     val io = IO(new Bundle {
@@ -294,7 +309,10 @@ class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
         val working = Output(Bool())
     })
 
-    val sets     = Seq.fill(posSets) { Module(new PosSet()) }
+    val sets     = (0 until posSets).map { i =>
+        val globalSetId = if (perfBankId >= 0) perfBankId * posSets + i else i
+        Module(new PosSet(globalSetId))
+    }
     val debugVec = WireInit(VecInit(sets.map(_.io.stateVec)))
     dontTouch(debugVec)
 
@@ -336,11 +354,30 @@ class PosTable(isTop: Boolean = false)(implicit p: Parameters) extends DJModule 
 
     io.working := Cat(sets.flatMap(_.io.stateVec.map(_.valid))).orR
 
+    val setOccupancyVec = VecInit(sets.map(set => PopCount(set.io.stateVec.map(_.valid))))
+    val hotspotVec      = VecInit(setOccupancyVec.map(_ >= (posWays - 1).U))
+    val hotspotValid    = hotspotVec.asUInt.orR
+    val hotspotSet      = PriorityEncoder(hotspotVec.asUInt)
+    val perfBankName    = if (perfBankId >= 0) perfBankId.toString else "shared"
+
     ZJPerf.distribution(
         "zj_pos_table_occupancy",
         io.alrUsePoS,
         true.B,
         HistogramRange.occupancy(nrPoS)
+    )
+    ZJPerf.distribution(
+        s"zj_pos_bank_${perfBankName}_max_occupancy",
+        setOccupancyVec.reduce((a, b) => Mux(a > b, a, b)),
+        true.B,
+        HistogramRange.occupancy(posWays)
+    )
+    ZJPerf.histogram(
+        s"zj_pos_bank_${perfBankName}_hotspot_set",
+        hotspotSet,
+        hotspotValid,
+        0,
+        posSets.max(1)
     )
 
     HAssert.placePipe(1)
