@@ -15,6 +15,7 @@ import dongjiang.frontend.decode.{CommitCode, Operations}
 import xs.utils.queue.FastQueue
 import xs.utils.GTimer
 import zhujiang.perf.ZJPerf
+import zhujiang.chi.ReqOpcode.StashOnceShared
 
 class Frontend(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Parameters) extends DJModule {
     override def isTopModule: Boolean = isTop
@@ -77,7 +78,9 @@ class Frontend(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
     val reqTaskBuf = Module(new TaskBuffer(nrReqTaskBuf, sort = true, perfName = "req"))
     val snpTaskBuf = if (hasBBN) Some(Module(new TaskBuffer(nrSnpTaskBuf, sort = false, perfName = "snp"))) else None
 
-    val posAlloc_s0 = Wire(Valid(new Addr with HasChiChannel))
+    val posAlloc_s0 = Wire(Valid(new Addr with HasChiChannel {
+        val isStash = Bool()
+    }))
     val posTable    = Module(new PosTable(perfBankId = perfBankId))
     val block       = Module(new Block())
 
@@ -145,6 +148,7 @@ class Frontend(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
     }
     posAlloc_s0.valid     := block.io.chiTask_s0.valid
     posAlloc_s0.bits.addr := block.io.chiTask_s0.bits.addr
+    posAlloc_s0.bits.isStash := block.io.chiTask_s0.bits.chi.reqIs(StashOnceShared)
     posTable.io.alloc_s0  := posAlloc_s0
     posTable.io.retry_s1  := block.io.retry_s1
     posTable.io.clean     := io.cleanPoS

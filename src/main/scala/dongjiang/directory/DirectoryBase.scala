@@ -378,6 +378,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
                 ("zj_llc_lookup_hit", lookupHit),
                 ("zj_llc_lookup_miss", lookupMiss),
                 ("l3_prefetch_hitCache", lookupHit && lookupStash),
+                ("l3_prefetch_late_cache", lookupHit && lookupStash),
                 ("zj_llc_stash_lookup_miss", lookupMiss && lookupStash),
                 ("zj_llc_ordinary_lookup_hit", lookupHit && !lookupStash),
                 ("zj_llc_ordinary_lookup_miss", lookupMiss && !lookupStash),

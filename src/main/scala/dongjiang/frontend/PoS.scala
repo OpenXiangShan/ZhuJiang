@@ -127,7 +127,9 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
         val dirBank = Input(UInt(dirBankBits.W))
         val posSet  = Input(UInt(posSetBits.W))
 
-        val alloc_s0 = Flipped(Valid(new Addr with HasChiChannel))
+        val alloc_s0 = Flipped(Valid(new Addr with HasChiChannel {
+            val isStash = Bool()
+        }))
         val sleep_s1 = Output(Bool())
         val block_s1 = Output(Bool())
         val hnIdx_s1 = Valid(new HnIndex)
@@ -143,6 +145,7 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
         val wakeup = Valid(new Addr)
 
         val stateVec = Output(Vec(posWays, new PosState with HasAddr))
+        val stashHitPos = Output(Bool())
     })
     dontTouch(io.stateVec)
 
@@ -151,7 +154,9 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
 
     val esVec = VecInit(entries.map(_.io.state))
 
-    val allocReg_s1    = RegInit(Valid(new Addr with HasChiChannel).Lit(_.valid -> false.B))
+    val allocReg_s1    = RegInit(Valid(new Addr with HasChiChannel {
+        val isStash = Bool()
+    }).Lit(_.valid -> false.B))
     val allocWayReg_s1 = Reg(UInt(posWayBits.W))
 
     val allocTag_s0 = io.alloc_s0.bits.Addr.posTag; dontTouch(allocTag_s0)
@@ -175,6 +180,18 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
     val matchReqS1_s0 = allocReg_s1.valid & allocTag_s0 === allocReg_s1.bits.Addr.posTag
 
     val block_s0 = Mux(io.alloc_s0.bits.isSnp, blockSnp_s0, blockReq_s0) | matchReqS1_s0 | lockReg | io.reqPoS.valid
+
+    val stashPosBlocked = io.alloc_s0.valid && io.alloc_s0.bits.isStash && block_s0
+    val prevStashBlocked = RegInit(false.B)
+    val prevStashAddr = Reg(UInt(addrBits.W))
+    val stashPosHit = stashPosBlocked && (!prevStashBlocked || prevStashAddr =/= io.alloc_s0.bits.addr)
+    io.stashHitPos := stashPosHit
+    when (io.alloc_s0.valid) {
+        prevStashBlocked := stashPosBlocked
+        prevStashAddr := io.alloc_s0.bits.addr
+    }.otherwise {
+        prevStashBlocked := false.B
+    }
 
     allocReg_s1.valid := io.alloc_s0.valid & !block_s0
     when(io.alloc_s0.valid) {
@@ -268,7 +285,9 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
                 (s"zj_pos_set_${perfSetName}_alloc_retry", allocReg_s1.valid && io.retry_s1),
                 (s"zj_pos_set_${perfSetName}_reqpos_fire", reqPosFire),
                 (s"zj_pos_set_${perfSetName}_reqpos_block", reqPoSBlock),
-                (s"zj_pos_set_${perfSetName}_hotspot_cycle", occupancy >= (posWays - 1).U)
+                (s"zj_pos_set_${perfSetName}_hotspot_cycle", occupancy >= (posWays - 1).U),
+                (s"l3_prefetch_hitPos_set${perfSetName}", stashPosHit),
+                (s"l3_prefetch_late_pos_set${perfSetName}", stashPosHit)
             )
         )
         ZJPerf.distribution(
@@ -287,7 +306,9 @@ class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
         val config  = new DJConfigIO()
         val dirBank = Input(UInt(dirBankBits.W))
 
-        val alloc_s0 = Flipped(Valid(new Addr with HasChiChannel))
+        val alloc_s0 = Flipped(Valid(new Addr with HasChiChannel {
+            val isStash = Bool()
+        }))
         val sleep_s1 = Output(Bool())
         val block_s1 = Output(Bool())
         val hnIdx_s1 = Output(new HnIndex)
@@ -307,6 +328,7 @@ class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
         val alrUsePoS = Output(UInt(log2Ceil(nrPoS + 1).W))
 
         val working = Output(Bool())
+        val stashHitPos = Output(UInt(log2Ceil(posSets + 1).W))
     })
 
     val sets     = (0 until posSets).map { i =>
@@ -353,6 +375,14 @@ class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
     dontTouch(addrVec2)
 
     io.working := Cat(sets.flatMap(_.io.stateVec.map(_.valid))).orR
+    io.stashHitPos := PopCount(sets.map(_.io.stashHitPos))
+
+    ZJPerf.accumulate(
+        Seq(
+            "l3_prefetch_hitPos" -> io.stashHitPos,
+            "l3_prefetch_late_pos" -> io.stashHitPos
+        )
+    )
 
     val setOccupancyVec = VecInit(sets.map(set => PopCount(set.io.stateVec.map(_.valid))))
     val hotspotVec      = VecInit(setOccupancyVec.map(_ >= (posWays - 1).U))
