@@ -10,6 +10,7 @@ import dongjiang.utils._
 import dongjiang.bundle._
 import xs.utils.debug._
 import xs.utils.mbist.MbistPipeline
+import zhujiang.perf.ZJPerf
 
 class DataBlock(isTop: Boolean = false)(implicit p: Parameters) extends DJModule {
     override def isTopModule: Boolean = isTop
@@ -102,6 +103,19 @@ class DataBlock(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
     datBuf.io.clean.valid        := dbidCtrl.io.req.fire
     datBuf.io.clean.bits.dataVec := dbidCtrl.io.req.bits
     datBuf.io.clean.bits.dbidVec := dbidCtrl.io.resp
+
+    ZJPerf.whenEnabled {
+        val txFromDataBuffer = dbToCHI
+        val txFromDataStore = !dbToCHI && dsToCHI
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_datablock_rxdat_stall", io.rxDat.valid && !io.rxDat.ready),
+                ("zj_datablock_txdat_stall", io.txDat.valid && !io.txDat.ready),
+                ("zj_datablock_txdat_databuffer_stall", txFromDataBuffer && !io.txDat.ready),
+                ("zj_datablock_txdat_datastore_stall", txFromDataStore && !io.txDat.ready)
+            )
+        )
+    }
 
     HardwareAssertion.placePipe(2)
 }

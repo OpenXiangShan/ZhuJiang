@@ -13,6 +13,7 @@ import xs.utils.mbist.MbistPipeline
 import xs.utils.queue.FastQueue
 import xs.utils.sram.DualPortSramTemplate
 import zhujiang.utils.SramPwrCtlBoring
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import zhujiang.chi.DatOpcode._
 import zhujiang.chi.RspOpcode.Comp
 import chisel3.experimental.BundleLiterals._
@@ -142,6 +143,44 @@ class DataBuffer(powerCtl: Boolean)(implicit p: Parameters) extends DJModule {
 
     io.toCHI   <> toCHIQ.io.deq
     io.writeDS <> toDSQ.io.deq
+
+    ZJPerf.whenEnabled {
+        val toCHIOccupancy = 2.U - toCHIQ.io.freeNum
+        val toDSOccupancy  = 2.U - toDSQ.io.freeNum
+        val readToCHIQueueStall = io.readToCHI.valid && !hasFreetoCHI
+        val readToCHIArbStall = io.readToCHI.valid && hasFreetoCHI && io.readToDS.valid
+        val readToDSQueueStall = io.readToDS.valid && !hasFreetoDS
+        val fromCHIStall = io.fromCHI.valid && !io.fromCHI.ready
+        val toCHIStall = io.toCHI.valid && !io.toCHI.ready
+        val writeDSStall = io.writeDS.valid && !io.writeDS.ready
+
+        ZJPerf.accumulate(
+            Seq(
+                ("zj_databuffer_read_to_chi_queue_stall", readToCHIQueueStall),
+                ("zj_databuffer_read_to_chi_arb_stall", readToCHIArbStall),
+                ("zj_databuffer_read_to_ds_queue_stall", readToDSQueueStall),
+                ("zj_databuffer_from_chi_stall", fromCHIStall),
+                ("zj_databuffer_to_chi_stall", toCHIStall),
+                ("zj_databuffer_write_ds_stall", writeDSStall),
+                ("zj_databuffer_to_chi_full", toCHIQ.io.freeNum === 0.U),
+                ("zj_databuffer_to_ds_full", toDSQ.io.freeNum === 0.U)
+            )
+        )
+        ZJPerf.distribution(
+            "zj_databuffer_to_chi_occupancy",
+            toCHIOccupancy,
+            true.B,
+            HistogramRange.occupancy(2),
+            includeMinMax = true
+        )
+        ZJPerf.distribution(
+            "zj_databuffer_to_ds_occupancy",
+            toDSOccupancy,
+            true.B,
+            HistogramRange.occupancy(2),
+            includeMinMax = true
+        )
+    }
 
     HardwareAssertion.placePipe(1)
 }

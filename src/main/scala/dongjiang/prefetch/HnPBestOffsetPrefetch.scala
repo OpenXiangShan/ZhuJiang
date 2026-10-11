@@ -287,7 +287,7 @@ class HnPBestOffsetPrefetch(implicit p: Parameters) extends HnBOPModule {
         val req = DecoupledIO(new ReqFlit(false))
     })
 
-    private val cstEnable = Constantin.createRecord("hn_pbop_enable", initValue = 1)
+    private val cstEnable = Constantin.createRecord("hn_pbop_enable", initValue = 0)
     val enable = io.enable && cstEnable.orR
 
     val delayQueue = Module(new HnDelayQueue("hnpbop"))

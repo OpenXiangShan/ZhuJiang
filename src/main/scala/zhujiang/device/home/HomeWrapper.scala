@@ -123,14 +123,7 @@ class HomeWrapper(nodes: Seq[Node], nrFriends: Int)(implicit p: Parameters) exte
             val ori = txBd.bits.asTypeOf(new DataFlit)
             val res = WireInit(ori)
             res.HomeNID := srcId
-            res.SrcID   := srcId
             res.TgtID   := tgt
-            res.asTypeOf(txBd.bits)
-        } else if (chn == "RSP") {
-            val ori = txBd.bits.asTypeOf(new RespFlit)
-            val res = WireInit(ori)
-            res.SrcID := srcId
-            res.TgtID := tgt
             res.asTypeOf(txBd.bits)
         } else {
             val ori = txBd.bits.asTypeOf(new RingFlit(txBd.bits.getWidth))
