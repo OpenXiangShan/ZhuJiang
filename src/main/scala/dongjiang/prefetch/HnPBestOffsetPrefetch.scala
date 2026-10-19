@@ -5,7 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import dongjiang._
 import dongjiang.utils._
-import xs.utils.Constantin
+import utility.Constantin
 import xs.utils.sram.SRAMTemplate
 import zhujiang.chi._
 import zhujiang.perf.ZJPerf

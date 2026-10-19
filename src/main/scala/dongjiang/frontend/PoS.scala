@@ -146,6 +146,7 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
 
         val stateVec = Output(Vec(posWays, new PosState with HasAddr))
         val stashHitPos = Output(Bool())
+        val stashLatePos = Output(Bool())
     })
     dontTouch(io.stateVec)
 
@@ -185,7 +186,9 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
     val prevStashBlocked = RegInit(false.B)
     val prevStashAddr = Reg(UInt(addrBits.W))
     val stashPosHit = stashPosBlocked && (!prevStashBlocked || prevStashAddr =/= io.alloc_s0.bits.addr)
+    val stashPosLate = stashPosBlocked && hasMatTag && (!prevStashBlocked || prevStashAddr =/= io.alloc_s0.bits.addr)
     io.stashHitPos := stashPosHit
+    io.stashLatePos := stashPosLate
     when (io.alloc_s0.valid) {
         prevStashBlocked := stashPosBlocked
         prevStashAddr := io.alloc_s0.bits.addr
@@ -287,7 +290,7 @@ class PosSet(perfSetId: Int = -1)(implicit p: Parameters) extends DJModule {
                 (s"zj_pos_set_${perfSetName}_reqpos_block", reqPoSBlock),
                 (s"zj_pos_set_${perfSetName}_hotspot_cycle", occupancy >= (posWays - 1).U),
                 (s"l3_prefetch_hitPos_set${perfSetName}", stashPosHit),
-                (s"l3_prefetch_late_pos_set${perfSetName}", stashPosHit)
+                (s"l3_prefetch_late_pos_set${perfSetName}", stashPosLate)
             )
         )
         ZJPerf.distribution(
@@ -329,6 +332,7 @@ class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
 
         val working = Output(Bool())
         val stashHitPos = Output(UInt(log2Ceil(posSets + 1).W))
+        val stashLatePos = Output(UInt(log2Ceil(posSets + 1).W))
     })
 
     val sets     = (0 until posSets).map { i =>
@@ -376,11 +380,12 @@ class PosTable(isTop: Boolean = false, perfBankId: Int = -1)(implicit p: Paramet
 
     io.working := Cat(sets.flatMap(_.io.stateVec.map(_.valid))).orR
     io.stashHitPos := PopCount(sets.map(_.io.stashHitPos))
+    io.stashLatePos := PopCount(sets.map(_.io.stashLatePos))
 
     ZJPerf.accumulate(
         Seq(
             "l3_prefetch_hitPos" -> io.stashHitPos,
-            "l3_prefetch_late_pos" -> io.stashHitPos
+            "l3_prefetch_late_pos" -> io.stashLatePos
         )
     )
 

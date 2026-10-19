@@ -18,7 +18,7 @@ import dongjiang.frontend.PosClean
 import dongjiang.backend.CmtState._
 import chisel3.experimental.BundleLiterals._
 import dongjiang.frontend.decode.Decode.{w_ci, w_si, w_sti, w_ti}
-import zhujiang.perf.ZJPerf
+import zhujiang.perf.{HistogramRange, ZJPerf}
 import xs.utils.GTimer
 
 object CmtState {
@@ -250,11 +250,45 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     io.replTask.bits.dir.llc.metaVec.head.stashInstallCycle.foreach { cycle =>
         cycle := Mux(stashInvalid, 0.U, Mux(stashInstall, perfTimer, taskReg.dir.llc.metaVec.head.stashInstallCycle.get))
     }
+    io.replTask.bits.dir.llc.metaVec.head.stashRequestCycle.foreach { cycle =>
+        cycle := Mux(stashInvalid, 0.U, Mux(stashInstall, taskReg.chi.perfIngressCycle.get, taskReg.dir.llc.metaVec.head.stashRequestCycle.get))
+    }
 
     ZJPerf.whenEnabled {
+        val usefulEvent = io.replTask.fire && stashFirstUse
+        val usefulTimingValid = usefulEvent &&
+            taskReg.dir.llc.metaVec.head.stashInstallCycle.get =/= 0.U &&
+            taskReg.dir.llc.metaVec.head.stashRequestCycle.get =/= 0.U
+        val installToUse = perfTimer - taskReg.dir.llc.metaVec.head.stashInstallCycle.get
+        val demandCycle = taskReg.chi.perfIngressCycle.get
+        val stashRequestCycle = taskReg.dir.llc.metaVec.head.stashRequestCycle.get
+        val demandBeforeStash = usefulTimingValid && demandCycle < stashRequestCycle
+        val demandAfterStash = usefulTimingValid && !demandBeforeStash
+        val demandBeforeDistance = stashRequestCycle - demandCycle
+        val demandAfterDistance = demandCycle - stashRequestCycle
+        val timingRanges = Seq(
+            HistogramRange(0, 5, 5),
+            HistogramRange(5, 10, 5),
+            HistogramRange(10, 20, 10),
+            HistogramRange(20, 40, 20),
+            HistogramRange(40, 80, 40),
+            HistogramRange(80, 160, 80),
+            HistogramRange(160, 320, 160)
+        )
         val stashUselessInval = io.replTask.fire && taskReg.cmt.wriLLC && taskReg.dir.llc.hit &&
             taskReg.cmt.llcState === ChiState.I && taskReg.dir.llc.metaVec.head.stashPrefetched.get &&
             !taskReg.dir.llc.metaVec.head.stashAccessed.get && !consumeRead
+        ZJPerf.accumulate("zj_hn_stash_useful_install_to_use_sum", Mux(usefulTimingValid, installToUse, 0.U))
+        ZJPerf.accumulate("zj_hn_stash_useful_install_to_use_sampled", usefulTimingValid)
+        ZJPerf.distribution("zj_hn_stash_useful_install_to_use_latency", installToUse, usefulTimingValid, timingRanges, includeMinMax = false)
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_before_req_sum", Mux(demandBeforeStash, demandBeforeDistance, 0.U))
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_before_req_sampled", demandBeforeStash)
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_after_req_sum", Mux(demandAfterStash, demandAfterDistance, 0.U))
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_after_req_sampled", demandAfterStash)
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_before_stash_req", demandBeforeStash)
+        ZJPerf.accumulate("zj_hn_stash_useful_demand_after_stash_req", demandAfterStash)
+        ZJPerf.distribution("zj_hn_stash_useful_demand_before_req_latency", demandBeforeDistance, demandBeforeStash, timingRanges, includeMinMax = false)
+        ZJPerf.distribution("zj_hn_stash_useful_demand_after_req_latency", demandAfterDistance, demandAfterStash, timingRanges, includeMinMax = false)
         ZJPerf.accumulate("l3_prefetch_useful", io.replTask.fire && stashFirstUse)
         ZJPerf.accumulate("l3_prefetch_useless_inval", stashUselessInval)
 

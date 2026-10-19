@@ -83,6 +83,7 @@ class ChiState(dirType: String = "llc") extends Bundle with HasChiState {
     val stashPrefetched   = if (dirType == "llc") Some(Bool()) else None
     val stashAccessed     = if (dirType == "llc") Some(Bool()) else None
     val stashInstallCycle = if (dirType == "llc") Some(UInt(64.W)) else None
+    val stashRequestCycle = if (dirType == "llc") Some(UInt(64.W)) else None
 }
 
 object ChiChannel {

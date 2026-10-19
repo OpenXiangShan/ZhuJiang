@@ -392,7 +392,7 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
             )
         )
         ZJPerf.histogram("zj_llc_set_occupancy", PopCount(metaValVec_d3), read_d3, 0, param.ways + 1)
-        val replacementSetStep = math.max(1, (param.sets + 63) / 64)
+        val replacementSetStep = 1
         ZJPerf.histogram(s"zj_llc_replacement_set_region_bank$perfBankId",
             reqSet_d3, victimValid, 0, param.sets, replacementSetStep)
 
@@ -551,11 +551,11 @@ class DirectoryBase(dirType: String, powerCtl: Boolean, perfBankId: Int = -1)(im
     }
 
     ZJPerf.whenEnabled {
-        // read_stall 原因细分(三者互斥;除 reset 期外,和 == read_stall):
-        //   by_write : 有目录项更新(write)待发,写优先级高于读
-        //   by_replwr: 替换路径将要写(repl & read 流水重叠)
-        //   by_sram  : 多周期 SRAM 口仍被上一次读/写占用(tagMetaReady=0)
-        // write_stall 同理细分(by_replwr 优先归因)。
+        // Break down read_stall causes (mutually exclusive outside reset):
+        //   by_write : a directory update is pending and writes have priority
+        //   by_replwr: the replacement path is about to write (repl/read overlap)
+        //   by_sram  : the multi-cycle SRAM port is still occupied (tagMetaReady=0)
+        // write_stall is classified similarly, with by_replwr taking priority.
         val readStall     = io.read.valid && !io.read.ready
         val stallByWrite  = readStall && io.write.valid
         val stallByReplWr = readStall && !io.write.valid && shiftReg.replWillWrite
