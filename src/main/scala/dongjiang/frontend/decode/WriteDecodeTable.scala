@@ -174,11 +174,16 @@ object Write_LAN {
                 CBRespIs(UD_PD) -> second(tdop("send") | write(WriteNoSnpFull), noCmt),
                 CBRespIs(UC)    -> second(noCmt),
                 CBRespIs(SC)    -> second(noCmt),
-                CBRespIs(I)     -> second(noCmt)
+                CBRespIs(I)     -> second(noCmt),
+                // CHI WriteCleanFull permits dirty shared data (SD_PD).
+                // Transfer its dirty responsibility to memory while preserving
+                // the retained source copy and any other sharers.
+                CBRespIs(SD_PD) -> second(tdop("send") | write(WriteNoSnpFull), noCmt)
             )),
             (srcHit | othHit | llcIs(I)) -> (returnDBID, Seq(
                 CBRespIs(SC) -> second(noCmt),
-                CBRespIs(I)  -> second(noCmt)
+                CBRespIs(I)  -> second(noCmt),
+                CBRespIs(SD_PD) -> second(tdop("send") | write(WriteNoSnpFull), noCmt)
             ))
         )
     )
