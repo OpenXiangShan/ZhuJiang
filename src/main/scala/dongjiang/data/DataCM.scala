@@ -369,6 +369,11 @@ class DataCM(implicit p: Parameters) extends DJModule {
             val TxnID  = Input(UInt(ChiTxnIdBits.W))
             val DataID = Input(UInt(2.W))
             val dbid   = Output(UInt(dbIdBits.W))
+            // Functional ownership check: exactly one live entry must own the
+            // TxnID and must still be waiting for this beat.  Without it a
+            // late/foreign data flit is written into PriorityEncoder(0)'s row.
+            val hit    = Output(Bool())
+            val expect = Output(Bool())
         }
 
         val release   = Valid(new DBIDVec with HasDataVec)
@@ -441,9 +446,13 @@ class DataCM(implicit p: Parameters) extends DJModule {
     val getDBIDHitVec = VecInit(entries.map(e => e.io.state.valid & io.getDBID.TxnID === e.io.state.bits.hnTxnID))
     val getDCID       = PriorityEncoder(getDBIDHitVec)
     val getBeatNum    = Mux(io.getDBID.DataID === "b10".U, 1.U, 0.U)
-    io.getDBID.dbid := VecInit(entries.map(_.io.state.bits.dbidVec))(getDCID)(getBeatNum)
-    HAssert.withEn(PopCount(getDBIDHitVec) === 1.U, io.getDBID.valid)
-    HAssert.withEn(VecInit(entries.map(_.io.state.bits.dataVec))(getDCID)(getBeatNum), io.getDBID.valid)
+    val getDBIDHit    = PopCount(getDBIDHitVec) === 1.U
+    val getDBIDExpect = VecInit(entries.map(_.io.state.bits.dataVec))(getDCID)(getBeatNum)
+    io.getDBID.dbid   := VecInit(entries.map(_.io.state.bits.dbidVec))(getDCID)(getBeatNum)
+    io.getDBID.hit    := getDBIDHit
+    io.getDBID.expect := getDBIDHit && getDBIDExpect
+    HAssert.withEn(getDBIDHit, io.getDBID.valid)
+    HAssert.withEn(getDBIDExpect, io.getDBID.valid)
 
     def connectReadToX[T <: Bundle with HasCritical](inVec: Vec[DecoupledIO[T]], out: DecoupledIO[T]): Unit = {
         val criticalVec = VecInit(inVec.map(e => e.valid & e.bits.critical))

@@ -95,7 +95,11 @@ class DataBlock(isTop: Boolean = false)(implicit p: Parameters) extends DJModule
     datBuf.io.readToCHI          <> dataCM.io.readToCHI
     datBuf.io.readToDS           <> dataCM.io.readToDS
     datBuf.io.dsResp             := fastArb(beatStorage.map(bs => Pipe(fastArb(bs.map(_.io.resp)))))
-    datBuf.io.fromCHI.valid      := io.rxDat.valid
+    // Drop a data flit that no live entry owns, or whose beat was already
+    // satisfied: writing it would use PriorityEncoder(0)'s DBID row and
+    // overwrite another in-flight writeback.  The flit is still accepted on
+    // the link (ready is unchanged), it just never reaches the DataBuffer.
+    datBuf.io.fromCHI.valid      := io.rxDat.valid & dataCM.io.getDBID.hit & dataCM.io.getDBID.expect
     datBuf.io.fromCHI.bits.dat   := io.rxDat.bits
     datBuf.io.fromCHI.bits.dbid  := dataCM.io.getDBID.dbid
     datBuf.io.toCHI.ready        := io.txDat.ready
