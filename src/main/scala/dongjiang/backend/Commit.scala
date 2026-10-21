@@ -136,8 +136,18 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     }))
     val respErrReg = RegInit(0.U(2.W))
 
-    val rxRspHit = io.rxRsp.valid & io.rxRsp.bits.TxnID === io.hnTxnID
-    val rxDatHit = io.rxDat.valid & io.rxDat.bits.TxnID === io.hnTxnID
+    // hnTxnID is this entry's fixed slot index, so a response for a previous
+    // tenant of the slot carries the same TxnID.  Only the tenant that still
+    // owns the slot may consume it: a CLEAN entry has finished committing and
+    // a FREE one holds no task.  The allocation cycle is included because the
+    // first data beat and the allocation can coincide; consuming a response
+    // while idle would leave a stale xCBResp in instReg that the next task
+    // then ORs into its own decoded response.
+    val ownsTxnID = (!stateReg.isFree & !stateReg.isClean) |
+      (io.alloc.valid & io.alloc.bits.hnTxnID === io.hnTxnID)
+
+    val rxRspHit = ownsTxnID & io.rxRsp.valid & io.rxRsp.bits.TxnID === io.hnTxnID
+    val rxDatHit = ownsTxnID & io.rxDat.valid & io.rxDat.bits.TxnID === io.hnTxnID
 
     val rspAckHit = rxRspHit & io.rxRsp.bits.Opcode === CompAck
     val datAckHit = rxDatHit & io.rxDat.bits.Opcode === NCBWrDataCompAck
