@@ -159,8 +159,12 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
     val CBWrDataHit1 = rxDatHit & io.rxDat.bits.DataID === "b10".U & io.rxDat.bits.Opcode === CopyBackWriteData
 
     val compAckHit    = rspAckHit | datAckHit
-    val XCBWrDataHit0 = NCBWrDataHit0 | CBWrDataHit0
-    val XCBWrDataHit1 = NCBWrDataHit1 | CBWrDataHit1
+    // A data beat is only this tenant's when the entry is still waiting for
+    // that beat.  Slot ownership alone is not enough: hnTxnID is the fixed
+    // slot index, so a beat of a previous tenant can arrive right after the
+    // slot is reallocated.
+    val XCBWrDataHit0 = (NCBWrDataHit0 | CBWrDataHit0) & flagReg.chi.w.xCBWrData0
+    val XCBWrDataHit1 = (NCBWrDataHit1 | CBWrDataHit1) & flagReg.chi.w.xCBWrData1
     val XCBWrDataHit  = XCBWrDataHit0 | XCBWrDataHit1
 
     when(io.cleanPoS.fire) {
