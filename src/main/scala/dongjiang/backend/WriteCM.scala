@@ -119,8 +119,8 @@ class WriteEntry(implicit p: Parameters) extends DJModule {
     io.resp.bits.qos            := reg.task.qos
     io.resp.bits.respErr        := reg.respErr
 
-    val dbidHit = reg.isValid & io.rxRsp.fire & io.rxRsp.bits.TxnID === reg.task.hnTxnID & (io.rxRsp.bits.Opcode === CompDBIDResp | io.rxRsp.bits.Opcode === DBIDResp)
-    val compHit = reg.isValid & io.rxRsp.fire & io.rxRsp.bits.TxnID === reg.task.hnTxnID & (io.rxRsp.bits.Opcode === CompDBIDResp | io.rxRsp.bits.Opcode === Comp)
+    val dbidHit = reg.isValid & io.rxRsp.fire & io.rxRsp.bits.TxnID === reg.task.hnTxnID.pad(ChiTxnIdBits) & (io.rxRsp.bits.Opcode === CompDBIDResp | io.rxRsp.bits.Opcode === DBIDResp)
+    val compHit = reg.isValid & io.rxRsp.fire & io.rxRsp.bits.TxnID === reg.task.hnTxnID.pad(ChiTxnIdBits) & (io.rxRsp.bits.Opcode === CompDBIDResp | io.rxRsp.bits.Opcode === Comp)
 
     when(io.alloc.fire) {
         next.task       := io.alloc.bits
