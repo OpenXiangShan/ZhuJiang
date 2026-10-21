@@ -468,7 +468,7 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
         instNext.xCBResp    := io.rxDat.bits.Resp
         HAssert(stateReg.isFree | stateReg.isFstTask)
         HAssert.withEn(instNext.xCBResp === instReg.xCBResp, instReg.getXCBResp)
-    }.otherwise {
+    }.elsewhen(!allocHit) {
         instNext.getXCBResp := instReg.getXCBResp
         instNext.xCBResp    := instReg.xCBResp
     }
@@ -477,7 +477,7 @@ class CommitEntry(implicit p: Parameters) extends DJModule {
         instNext.valid := false.B
     }.elsewhen(cmRespHit | XCBWrDataHit) {
         instNext.valid := true.B
-    }.otherwise {
+    }.elsewhen(!allocHit) {
         instNext.valid := instReg.valid
     }
 
