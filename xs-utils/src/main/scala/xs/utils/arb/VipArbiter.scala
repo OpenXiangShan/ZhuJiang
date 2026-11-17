@@ -27,30 +27,17 @@ class BaseVipArbiter[T <: Data](gen: T, size:Int) extends BaseArbiter(gen, size)
 }
 
 class VipArbiter[T <: Data](gen: T, size:Int) extends BaseVipArbiter(gen, size) {
-  private val highMaskVec = Wire(Vec(size, Bool()))
-  private val lowMaskVec = Wire(Vec(size, Bool()))
-  private val highMask = highMaskVec.asUInt
-  private val lowMask = lowMaskVec.asUInt
-  for(idx <- 0 until size) {
-    if (idx == 0) {
-      highMaskVec(idx) := false.B
-    } else {
-      highMaskVec(idx) := vipPtrOH(idx - 1, 0).orR
-    }
-    if (idx == size - 1) {
-      lowMaskVec(idx) := false.B
-    } else {
-      lowMaskVec(idx) := vipPtrOH(size - 1, idx + 1).orR
-    }
-  }
+  // Derive the ranges around the one-hot pointer without expanding a prefix
+  // reduction for every bit. This keeps wide arbiters tractable for synthesis.
+  private val lowMask = vipPtrOH - 1.U
+  private val highMask = ~(vipPtrOH | lowMask)
   assert((highMask | lowMask | vipPtrOH).andR)
 
   private val highValidMask = highMask & validMask
   private val lowValidMask = lowMask & validMask
-  private val highPtrNext = PriorityEncoderOH(highValidMask)
-  private val lowPtrNext = PriorityEncoderOH(lowValidMask)
+  private val nextValidMask = Mux(highValidMask.orR, highValidMask, lowValidMask)
 
-  vipPtrNext := Mux(highValidMask.orR, highPtrNext, lowPtrNext)
+  vipPtrNext := nextValidMask & ((~nextValidMask).asUInt + 1.U)
   when(vipPtrMove) {
     assert((vipPtrNext & validMask).orR)
   }
