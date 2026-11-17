@@ -271,7 +271,10 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
     io.dataTask.bits.qos         := reg.qos
     io.cleanPoS.valid            := reg.isCleanPoS
     io.cleanPoS.bits.hnIdx       := Mux(reg.isCleanPosT, reg.getHnIdx, reg.repl.getHnIdx)
-    io.cleanPoS.bits.channel     := Mux(reg.isCleanPosT, ChiChannel.SNP, Mux(reg.isReplSF, ChiChannel.SNP, ChiChannel.REQ))
+    // A late SF hit changes isReplSF, but its allocated PoS slot is still SNP.
+    // After an LLC replacement allocates a new slot, that slot is REQ.
+    val cleanSfPoS = reg.isCleanPosT | reg.isReplSF | (reg.alrReplSF & !reg.isReplLLC)
+    io.cleanPoS.bits.channel     := Mux(cleanSfPoS, ChiChannel.SNP, ChiChannel.REQ)
     io.cleanPoS.bits.qos         := reg.qos
 
     io.resp.valid        := reg.isRespCmt
@@ -312,7 +315,8 @@ class ReplaceEntry(implicit p: Parameters) extends DJModule {
         }
 
         is(RESPCMT) {
-            when(io.resp.fire) { next.state := Mux(reg.isReplSF, Mux(reg.needSnp, REQDB, CLEANPOSR), Mux(reg.isReplLLC, CLEANPOSR, FREE)) }
+            // A late directory hit still needs to release its allocated PoS.
+            when(io.resp.fire) { next.state := Mux(reg.isReplSF, Mux(reg.needSnp, REQDB, CLEANPOSR), Mux(reg.isReplLLC | reg.alrReplSF, CLEANPOSR, FREE)) }
         }
 
         is(REQDB) {
